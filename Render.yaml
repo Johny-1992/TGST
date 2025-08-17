@@ -1,0 +1,41 @@
+# render.yaml TGST - Empire Auto-Magique Ultimate
+autoDeploy: true
+plan: starter
+services:
+
+# --- Service dynamique pour tous les dossiers du repo ---
+# Chaque dossier devient automatiquement un service
+# Ports et URLs générés dynamiquement
+# Multi-langages supportés : JS, Python, Solidity, Shell, HTML
+# Secrets injectés depuis Render pour sécurité maximale
+
+  - type: web
+    name: tgst-{{folder}}
+    env: auto
+    repo: https://github.com/johny-1992/TGST
+    branch: main
+    privateRepo: true
+    autoDeploy: true
+    buildCommand: |
+      if [ -f ./{{folder}}/package.json ]; then
+        npm --prefix ./{{folder}} install
+      elif [ -f ./{{folder}}/requirements.txt ]; then
+        pip install -r ./{{folder}}/requirements.txt
+      fi
+    startCommand: |
+      PORT={{port}} \
+      npm --prefix ./{{folder}} start || python ./{{folder}}/main.py || node ./{{folder}}/index.js
+    envVars:
+      PRIVATE_KEY:
+        fromSecret: PRIVATE_KEY
+      BOT_TOKEN:
+        fromSecret: BOT_TOKEN
+      INFURA_API:
+        fromSecret: INFURA_API
+      SITE_URL:
+        value: https://tgst-site.onrender.com
+      APP_URL:
+        value: https://tgst-app.onrender.com
+      BOT_URL:
+        value: https://tgst-bot.onrender.com
+        
