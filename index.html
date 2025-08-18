@@ -1,15 +1,20 @@
-
-<!doctype html>
-<html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>TGST — Spend to Earn</title></head>
-<body style="font-family:system-ui;margin:0">
-<section style="padding:40px;max-width:900px;margin:0 auto">
-  <h1>TGST — Token Global Smart Trade</h1>
-  <p>Earn TGST from your everyday spend: telecom, TV, betting, e‑bank and more.</p>
-  <ul>
-    <li>Partners connecting via secure API</li>
-    <li>On-chain distribution & deflationary burns</li>
-    <li>Use TGST for perks or swap to stablecoins</li>
-  </ul>
-</section>
-</body></html>
+<!DOCTYPE html>
+<html>
+<head>
+  <title>TGST Frontend</title>
+  <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+</head>
+<body>
+  <h1>TGST Empire Frontend</h1>
+  <button onclick="ping()">Ping Backend</button>
+  <pre id="output"></pre>
+  <script>
+    const backend = new URLSearchParams(window.location.search).get("backend") || "https://tgst-1.onrender.com";
+    function ping() {
+      axios.get(backend + "/ping").then(r => {
+        document.getElementById("output").innerText = JSON.stringify(r.data, null, 2);
+      }).catch(e => document.getElementById("output").innerText = e.toString());
+    }
+  </script>
+</body>
+</html>
