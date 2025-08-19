@@ -1,31 +1,42 @@
-name: Deploy TGST
+#!/bin/bash
 
-on:
-  push:
-    branches:
-      - main
+# ===========================
+# Script de déploiement TGST
+# ===========================
 
-jobs:
-  deploy:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
+echo "🔹 Déploiement TGST - Phase 1 : Clone du repo"
+git clone https://github.com/Johny-1992/TGST.git
+cd TGST || { echo "Erreur : dossier TGST introuvable"; exit 1; }
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v3
-        with:
-          node-version: 18
+echo "🔹 Installation des dépendances Node.js"
+yarn install || { echo "Erreur lors de l'installation"; exit 1; }
 
-      - name: Install dependencies
-        run: npm install
+echo "🔹 Vérification du fichier .env"
+if [ ! -f ".env" ]; then
+    echo "⚠️ Attention : .env introuvable. Créez-le avec vos variables secrètes."
+else
+    echo ".env détecté ✅"
+fi
 
-      - name: Build project
-        run: npm run build --if-present
+echo "🔹 Déploiement Render"
+render service create \
+  --name tgst-backend \
+  --type web \
+  --env node \
+  --branch main \
+  --build-command "yarn install" \
+  --start-command "node server.js"
 
-      - name: Deploy to Cloudflare
-        run: npx wrangler deploy
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          NODE_ENV: production
+echo "🔹 Déploiement Cloudflare Worker"
+if ! command -v wrangler &> /dev/null; then
+    echo "Wrangler non installé, installation en cours..."
+    npm install -g wrangler
+fi
+
+wrangler publish || { echo "Erreur Cloudflare Worker"; exit 1; }
+
+echo "🎉 Déploiement terminé !"
+echo "Backend TGST Render : https://tgst-1.onrender.com"
+echo "Worker Cloudflare : https://<TON_WORKER>.workers.dev"
+
+echo "💡 TGST est maintenant en ligne et visible partout"
