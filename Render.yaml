@@ -1,13 +1,7 @@
-# render.yaml TGST - Empire Auto-Magique Ultimate
+# render.yaml TGST - Empire Auto-Magique Ultimate v2
 autoDeploy: true
 plan: starter
 services:
-
-# --- Service dynamique pour tous les dossiers du repo ---
-# Chaque dossier devient automatiquement un service
-# Ports et URLs générés dynamiquement
-# Multi-langages supportés : JS, Python, Solidity, Shell, HTML
-# Secrets injectés depuis Render pour sécurité maximale
 
   - type: web
     name: tgst-{{folder}}
@@ -38,4 +32,3 @@ services:
         value: https://tgst-app.onrender.com
       BOT_URL:
         value: https://tgst-bot.onrender.com
-        
