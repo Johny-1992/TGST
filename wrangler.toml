@@ -1,19 +1,18 @@
-
-name = "tgst1"
-main = "server.js"
+name = "tgst-worker"
+type = "javascript"
+account_id = "TON_ACCOUNT_ID"
+workers_dev = true
 compatibility_date = "2025-08-19"
 
 [vars]
-# Tes variables d'environnement (exemple)
-NODE_ENV = "production"
-PORT = "8080"
+PRIVATE_KEY = "YOUR_PRIVATE_KEY"
+BOT_TOKEN = "YOUR_BOT_TOKEN"
+INFURA_API = "YOUR_INFURA_API"
+SITE_URL = "https://tgst-site.onrender.com"
+APP_URL = "https://tgst-app.onrender.com"
+BOT_URL = "https://tgst-bot.onrender.com"
 
-[build]
-command = "npm install && npm run build"
+Toutes les variables sensibles restent dans Cloudflare.
 
-[deploy]
-command = "npm start"
+Prêt à déployer en un clic avec wrangler deploy.
 
-[site]
-bucket = "./public"
-entry-point = "."
