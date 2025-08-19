@@ -1,0 +1,14 @@
+addEventListener('fetch', event => {
+  event.respondWith(handleRequest(event.request))
+})
+
+async function handleRequest(request) {
+  return new Response(JSON.stringify({
+    status: 'TGST Empire Online',
+    site: 'https://tgst-site.onrender.com',
+    app: 'https://tgst-app.onrender.com',
+    bot: 'https://tgst-bot.onrender.com'
+  }), {
+    headers: { 'Content-Type': 'application/json' }
+  })
+}
