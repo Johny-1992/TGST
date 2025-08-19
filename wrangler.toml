@@ -1,0 +1,16 @@
+name = "tgst1"
+main = "server.js"
+compatibility_date = "2025-08-19"
+
+# Dossier public pour ton frontend (change si tu utilises React/Vue/Next)
+[site]
+bucket = "./public"
+entry-point = "."
+
+# Variables d'environnement (elles viendront aussi de GitHub Secrets)
+[vars]
+NODE_ENV = "production"
+
+# Exemple : si tu as une clé API stockée dans GitHub Secrets
+# API_KEY = "EN_PROD_CE_SERA_REMPLACÉ_PAR_GITHUB"
+
