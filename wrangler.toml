@@ -1,18 +1,15 @@
 name = "tgst-worker"
-type = "javascript"
-account_id = "TON_ACCOUNT_ID"
-workers_dev = true
+main = "index.js"
 compatibility_date = "2025-08-19"
+type = "javascript"
+account_id = "{{YOUR_CLOUDFLARE_ACCOUNT_ID}}"
+workers_dev = true
 
 [vars]
-PRIVATE_KEY = "YOUR_PRIVATE_KEY"
-BOT_TOKEN = "YOUR_BOT_TOKEN"
-INFURA_API = "YOUR_INFURA_API"
+PRIVATE_KEY = "{{env:PRIVATE_KEY}}"
+BOT_TOKEN = "{{env:BOT_TOKEN}}"
+INFURA_API = "{{env:INFURA_API}}"
 SITE_URL = "https://tgst-site.onrender.com"
 APP_URL = "https://tgst-app.onrender.com"
 BOT_URL = "https://tgst-bot.onrender.com"
-
-Toutes les variables sensibles restent dans Cloudflare.
-
-Prêt à déployer en un clic avec wrangler deploy.
-
+DASHBOARD_URL = "https://tgst-dashboard.onrender.com"
