@@ -1,0 +1,60 @@
+From 0000000000000000000000000000000000000000 Mon Aug 20 00:00:00 2025
+From: johny-1992 <johnymulenda5@gmail.com>
+Date: Tue, 20 Aug 2025 00:00:00 +0000
+Subject: [PATCH] Ajouter Codespaces .devcontainer et Makefile (final)
+
+---
+ .devcontainer/Dockerfile | 10 ++++++++++
+ .devcontainer/devcontainer.json | 12 ++++++++++++
+ .devcontainer/post-create.sh | 6 ++++++
+ Makefile | 8 ++++++++
+ 4 files changed, 36 insertions(+)
+ create mode 100644 .devcontainer/Dockerfile
+ create mode 100644 .devcontainer/devcontainer.json
+ create mode 100644 .devcontainer/post-create.sh
+ create mode 100644 Makefile
+
+diff --git a/.devcontainer/Dockerfile b/.devcontainer/Dockerfile
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/.devcontainer/Dockerfile
+@@
++FROM mcr.microsoft.com/vscode/devcontainers/base:ubuntu
++RUN apt-get update && apt-get install -y git curl nano
++WORKDIR /workspace
++
+diff --git a/.devcontainer/devcontainer.json b/.devcontainer/devcontainer.json
+new file mode 100644
+index 0000000..2222222
+--- /dev/null
++++ b/.devcontainer/devcontainer.json
+@@
++{
++  "name": "TGST Codespace",
++  "build": { "dockerfile": "Dockerfile" },
++  "postCreateCommand": "./post-create.sh",
++  "remoteUser": "vscode"
++}
++
+diff --git a/.devcontainer/post-create.sh b/.devcontainer/post-create.sh
+new file mode 100644
+index 0000000..3333333
+--- /dev/null
++++ b/.devcontainer/post-create.sh
+@@
++#!/bin/bash
++echo "Setup TGST Codespace..."
++git config --global user.name "johny-1992"
++git config --global user.email "johnymulenda5@gmail.com"
++echo "Installation des dépendances terminée"
++
+diff --git a/Makefile b/Makefile
+new file mode 100644
+index 0000000..4444444
+--- /dev/null
++++ b/Makefile
+@@
++all:
++	@echo "TGST Makefile opérationnel"
++
