@@ -1,20 +1,44 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-  <title>TGST Frontend</title>
-  <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+  <meta charset="UTF-8">
+  <title>TGST Token – Powering Mobile Apps & Sports Betting</title>
+  <meta name="description" content="TGST Token est au centre de l'écosystème mobile et du betting. Découvrez les apps, bots et dashboards liés au TGST.">
+  <meta name="keywords" content="TGST, crypto, token, blockchain, betting, mobile app, DeFi, Render, Cloudflare">
+  <meta name="author" content="TGST Ecosystem">
+
+  <!-- Open Graph -->
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://tgst-site.onrender.com">
+  <meta property="og:title" content="TGST Token – The Core of Betting & Mobile Innovation">
+  <meta property="og:description" content="TGST Token relie apps mobiles, bots et dashboard en un seul écosystème.">
+  <meta property="og:image" content="https://tgst-site.onrender.com/logo.png">
+
+  <!-- Twitter -->
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:url" content="https://tgst-site.onrender.com">
+  <meta name="twitter:title" content="TGST Token – Mobile & Betting Revolution">
+  <meta name="twitter:description" content="Le jeton TGST est au cœur de l’écosystème mobile et blockchain.">
+  <meta name="twitter:image" content="https://tgst-site.onrender.com/logo.png">
+
+  <link rel="icon" href="logo.png" type="image/png">
+  <style>
+    body { text-align:center; font-family:Arial, sans-serif; background:#0f172a; color:#fff; }
+    h1 { color:#38bdf8; }
+    code { background:#1e293b; padding:5px 10px; border-radius:8px; }
+  </style>
 </head>
 <body>
-  <h1>TGST Empire Frontend</h1>
-  <button onclick="ping()">Ping Backend</button>
-  <pre id="output"></pre>
-  <script>
-    const backend = new URLSearchParams(window.location.search).get("backend") || "https://tgst-1.onrender.com";
-    function ping() {
-      axios.get(backend + "/ping").then(r => {
-        document.getElementById("output").innerText = JSON.stringify(r.data, null, 2);
-      }).catch(e => document.getElementById("output").innerText = e.toString());
-    }
-  </script>
+  <img src="logo.png" alt="TGST Logo" width="150"/>
+  <h1>🚀 Welcome to TGST Ecosystem</h1>
+  <p><strong>TGST Token</strong> is at the center of mobile innovation and sports betting.</p>
+  <p>📌 Contract Address: <code>0xYOUR_TGST_CONTRACT</code></p>
+  <p>🌍 Explore TGST Services:</p>
+  <ul style="list-style:none;">
+    <li>🌐 <a href="https://tgst-site.onrender.com" target="_blank">TGST Website</a></li>
+    <li>📱 <a href="https://tgst-app.onrender.com" target="_blank">TGST Mobile App</a></li>
+    <li>🤖 <a href="https://tgst-bot.onrender.com" target="_blank">TGST Bot</a></li>
+    <li>📊 <a href="https://tgst-dashboard.onrender.com" target="_blank">TGST Dashboard</a></li>
+  </ul>
 </body>
 </html>
