@@ -1,15 +1,11 @@
-name = "tgst-worker"
-main = "index.js"
+name = "tgst1"
+main = "server.js"
 compatibility_date = "2025-08-19"
-type = "javascript"
-account_id = "{{YOUR_CLOUDFLARE_ACCOUNT_ID}}"
-workers_dev = true
+
+[site]
+bucket = "./public"
+entry-point = "."
 
 [vars]
-PRIVATE_KEY = "{{env:PRIVATE_KEY}}"
-BOT_TOKEN = "{{env:BOT_TOKEN}}"
-INFURA_API = "{{env:INFURA_API}}"
-SITE_URL = "https://tgst-site.onrender.com"
-APP_URL = "https://tgst-app.onrender.com"
-BOT_URL = "https://tgst-bot.onrender.com"
-DASHBOARD_URL = "https://tgst-dashboard.onrender.com"
+NODE_ENV = "production"
+# API_KEY = "EN_PROD_CE_SERA_REMPLACÉ_PAR_GITHUB"
