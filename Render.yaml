@@ -23,3 +23,16 @@ services:
       APP_URL: {value: https://tgst-app.onrender.com}
       BOT_URL: {value: https://tgst-bot.onrender.com}
       DASHBOARD_URL: {value: https://tgst-dashboard.onrender.com}
+services:
+  - type: web
+    name: tgst-empire
+    env: node
+    plan: free
+    buildCommand: "npm install"
+    startCommand: "npm start"
+    autoDeploy: true
+    branch: main
+    envVars:
+      - key: NODE_ENV
+        value: production
+        
