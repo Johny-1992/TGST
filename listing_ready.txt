@@ -1,0 +1,3 @@
+Nom: TGST
+Symbol: TGST
+Website: https://tgst.vercel.app/

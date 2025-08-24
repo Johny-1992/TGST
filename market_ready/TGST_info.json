@@ -1,0 +1,10 @@
+{
+  "name": "TGST",
+  "symbol": "TGST",
+  "total_supply": 1000000000000,
+  "decimals": 18,
+  "contract_address": "0x0000000000000000000000000000000000000000",
+  "website": "https://tgst.vercel.app",
+  "logo": "https://tgst.vercel.app/assets/logo.png",
+  "description": "TGST — Token Global Smart Trade — Récompenses et cashback multi-plateformes"
+}
