@@ -1,17 +1,17 @@
   // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.21;
 
-import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-import "@openzeppelin/contracts/access/Ownable.sol";
-import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
-import "@openzeppelin/contracts/utils/Pausable.sol";
-import "@openzeppelin/contracts/governance/TimelockController.sol";
-import "@openzeppelin/contracts/utils/math/SafeMath.sol";
+// Imports OpenZeppelin v4.9.3 (compatibles et sécurisés)
+import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/v4.9.3/contracts/token/ERC20/ERC20.sol";
+import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/v4.9.3/contracts/access/Ownable.sol";
+import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/v4.9.3/contracts/security/ReentrancyGuard.sol";
+import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/v4.9.3/contracts/security/Pausable.sol";
+import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/v4.9.3/contracts/governance/TimelockController.sol";
 
 /// @title TGSTToken V4 Lunar (Optimisé pour la Lune)
 /// @notice Secure Global Smart Trade Token avec burn, claim, referral, staking rewards, et conversion vers services partenaires.
 contract TGSTTokenV4Lunar is ERC20, Ownable, ReentrancyGuard, Pausable {
-    using SafeMath for uint256;
+    // SafeMath n'est plus nécessaire en Solidity 0.8.x (overflow/underflow protégés nativement)
 
     // ----- Constants -----
     uint256 public constant MAX_SUPPLY = 1_000_000_000_000 * 1e18;
@@ -56,7 +56,7 @@ contract TGSTTokenV4Lunar is ERC20, Ownable, ReentrancyGuard, Pausable {
     event TransferFeeUpdated(uint256 feeOnTransferBP);
     event PartnerUpdated(address indexed partner, string name, uint256 tgstPerUnit, bool active);
     event TGSTClaimed(address indexed user, uint256 amount, address indexed referrer, uint256 referralAmount);
-    event ReferralReward(address indexed referrer, address indexed referee, uint256 amount);
+    event ReferralReward(address indexed referrer, address indexed referee, uint264 amount);
     event TokensBurned(address indexed user, uint256 amount, uint256 burnAmount, string reason);
     event ServiceConverted(address indexed user, address indexed partner, uint256 tgstAmount, uint256 serviceUnits);
     event Staked(address indexed user, uint256 amount);
@@ -64,11 +64,14 @@ contract TGSTTokenV4Lunar is ERC20, Ownable, ReentrancyGuard, Pausable {
     event TimelockSet(address indexed timelock);
 
     // ----- Constructor -----
-    constructor(address _feeCollector, address _timelock) ERC20("Token Global Smart Trade", "TGST") Ownable() {
+    constructor(address _feeCollector, address _timelock)
+        ERC20("Token Global Smart Trade", "TGST")
+        Ownable(msg.sender)
+    {
         require(_feeCollector != address(0), "TGST: Invalid fee collector");
         require(_timelock != address(0), "TGST: Invalid timelock");
         feeCollector = _feeCollector;
-        timelock = TimelockController(payable(_timelock)); // cast payable
+        timelock = TimelockController(payable(_timelock));
         noFee[msg.sender] = true;
         noFee[_feeCollector] = true;
         noFee[_timelock] = true;
@@ -126,13 +129,13 @@ contract TGSTTokenV4Lunar is ERC20, Ownable, ReentrancyGuard, Pausable {
     function fundDistribution(uint256 amount) external onlyOwner {
         require(amount > 0, "TGST: Amount > 0");
         _transfer(msg.sender, address(this), amount);
-        distributionPool = distributionPool.add(amount);
+        distributionPool += amount;
     }
 
     function fundRewardPool(uint256 amount) external onlyOwner {
         require(amount > 0, "TGST: Amount > 0");
         _transfer(msg.sender, address(this), amount);
-        rewardPool = rewardPool.add(amount);
+        rewardPool += amount;
     }
 
     function emergencyWithdraw(address to, uint256 amount) external onlyTimelock {
@@ -147,14 +150,14 @@ contract TGSTTokenV4Lunar is ERC20, Ownable, ReentrancyGuard, Pausable {
         require(distributionPool >= totalRequired, "TGST: Insufficient distribution pool");
 
         _transfer(address(this), msg.sender, claimAmount);
-        distributionPool = distributionPool.sub(claimAmount);
+        distributionPool -= claimAmount;
         lastClaim[msg.sender] = block.timestamp;
 
         uint256 referralAmount = 0;
         if (referrer != address(0) && referrer != msg.sender) {
             referralAmount = referralBonus;
             _transfer(address(this), referrer, referralAmount);
-            distributionPool = distributionPool.sub(referralAmount);
+            distributionPool -= referralAmount;
             emit ReferralReward(referrer, msg.sender, referralAmount);
         }
 
@@ -166,9 +169,9 @@ contract TGSTTokenV4Lunar is ERC20, Ownable, ReentrancyGuard, Pausable {
         if (noFee[sender] || noFee[recipient]) {
             super._transfer(sender, recipient, amount);
         } else {
-            uint256 burnAmount = amount.mul(burnOnTransferBP).div(10000);
-            uint256 feeAmount = amount.mul(feeOnTransferBP).div(10000);
-            uint256 sendAmount = amount.sub(burnAmount).sub(feeAmount);
+            uint256 burnAmount = (amount * burnOnTransferBP) / 10000;
+            uint256 feeAmount = (amount * feeOnTransferBP) / 10000;
+            uint256 sendAmount = amount - burnAmount - feeAmount;
 
             if (burnAmount > 0) { _burn(sender, burnAmount); }
             if (feeAmount > 0) { super._transfer(sender, feeCollector, feeAmount); }
@@ -179,14 +182,14 @@ contract TGSTTokenV4Lunar is ERC20, Ownable, ReentrancyGuard, Pausable {
 
     function redeemBurn(uint256 amount) external nonReentrant whenNotPaused {
         require(balanceOf(msg.sender) >= amount, "TGST: Insufficient balance");
-        uint256 burnAmount = amount.mul(burnOnRedeemBP).div(10000);
-_burn(msg.sender, burnAmount);
+        uint256 burnAmount = (amount * burnOnRedeemBP) / 10000;
+        _burn(msg.sender, burnAmount);
         emit TokensBurned(msg.sender, amount, burnAmount, "redeem");
     }
 
     function swapBurn(uint256 amount) external nonReentrant whenNotPaused {
         require(balanceOf(msg.sender) >= amount, "TGST: Insufficient balance");
-        uint256 burnAmount = amount.mul(burnOnSwapBP).div(10000);
+        uint256 burnAmount = (amount * burnOnSwapBP) / 10000;
         _burn(msg.sender, burnAmount);
         emit TokensBurned(msg.sender, amount, burnAmount, "swap");
     }
@@ -195,7 +198,7 @@ _burn(msg.sender, burnAmount);
         Partner memory partner = partners[partnerAddr];
         require(partner.active, "TGST: Partner inactive");
         require(balanceOf(msg.sender) >= tgstAmount, "TGST: Insufficient balance");
-        uint256 serviceUnits = tgstAmount.mul(partner.tgstPerUnit).div(1e18);
+        uint256 serviceUnits = (tgstAmount * partner.tgstPerUnit) / 1e18;
         require(serviceUnits > 0, "TGST: Conversion too small");
 
         _burn(msg.sender, tgstAmount);
@@ -203,11 +206,11 @@ _burn(msg.sender, burnAmount);
     }
 
     function stakeTGST(uint256 amount) external nonReentrant whenNotPaused {
-        require(amount > 0, "TGST: Amount > 0");
+        require(amount > 0, Amount > 0");
         require(balanceOf(msg.sender) >= amount, "TGST: Insufficient balance");
 
         super._transfer(msg.sender, address(this), amount);
-        stakedBalance[msg.sender] = stakedBalance[msg.sender].add(amount);
+        stakedBalance[msg.sender] += amount;
         stakeTimestamp[msg.sender] = block.timestamp;
         emit Staked(msg.sender, amount);
     }
@@ -215,19 +218,19 @@ _burn(msg.sender, burnAmount);
     function unstakeTGST() external nonReentrant whenNotPaused {
         uint256 staked = stakedBalance[msg.sender];
         require(staked > 0, "TGST: Nothing staked");
-        require(block.timestamp.sub(stakeTimestamp[msg.sender]) >= MIN_STAKE_DURATION, "TGST: Min stake duration not met");
+        require(block.timestamp - stakeTimestamp[msg.sender] >= MIN_STAKE_DURATION, "TGST: Min stake duration not met");
 
-        uint256 daysStaked = block.timestamp.sub(stakeTimestamp[msg.sender]).div(1 days);
-        uint256 reward = staked.mul(dailyRewardBP).mul(daysStaked).div(10000);
-        uint256 maxReward = staked.mul(maxTotalRewardBP).div(10000);
+        uint256 daysStaked = (block.timestamp - stakeTimestamp[msg.sender]) / 1 days;
+        uint256 reward = (staked * dailyRewardBP * daysStaked) / 10000;
+        uint256 maxReward = (staked * maxTotalRewardBP) / 10000;
         reward = reward > maxReward ? maxReward : reward;
 
         require(rewardPool >= reward, "TGST: Insufficient reward pool");
 
         stakedBalance[msg.sender] = 0;
-        rewardPool = rewardPool.sub(reward);
+        rewardPool -= reward;
 
-        super._transfer(address(this), msg.sender, staked.add(reward));
+        super._transfer(address(this), msg.sender, staked + reward);
         emit Unstaked(msg.sender, staked, reward);
     }
 
@@ -245,5 +248,3 @@ _burn(msg.sender, burnAmount);
         revert("TGST: No ETH accepted");
     }
 }
-
-
