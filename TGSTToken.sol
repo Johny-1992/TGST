@@ -67,7 +67,7 @@ contract TGSTTokenV4Lunar is ERC20, Ownable, ReentrancyGuard, Pausable {
     // ----- Constructor -----
     constructor(address _feeCollector, address _timelock)
         ERC20("Token Global Smart Trade", "TGST")
-        Ownable(msg.sender)
+        Ownable()
     {
         require(_feeCollector != address(0), "TGST: Invalid fee collector");
         require(_timelock != address(0), "TGST: Invalid timelock");
