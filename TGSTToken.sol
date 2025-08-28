@@ -1,7 +1,7 @@
-  // SPDX-License-Identifier: MIT
+  
+// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.21;
 
-// Imports OpenZeppelin v4.9.3 (compatibles et sécurisés)
 import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/v4.9.3/contracts/token/ERC20/ERC20.sol";
 import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/v4.9.3/contracts/access/Ownable.sol";
 import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/v4.9.3/contracts/security/ReentrancyGuard.sol";
@@ -11,14 +11,26 @@ import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/v4.9.3/contr
 /// @title TGSTToken V4 Lunar (Optimisé pour la Lune)
 /// @notice Secure Global Smart Trade Token avec burn, claim, referral, staking rewards, et conversion vers services partenaires.
 contract TGSTTokenV4Lunar is ERC20, Ownable, ReentrancyGuard, Pausable {
-    // SafeMath n'est plus nécessaire en Solidity 0.8.x (overflow/underflow protégés nativement)
-
     // ----- Constants -----
     uint256 public constant MAX_SUPPLY = 1_000_000_000_000 * 1e18;
     uint256 public constant MIN_STAKE_DURATION = 7 days;
     uint256 public constant MAX_BURN_RATE_BP = 1000; // 10%
     uint256 public constant MAX_DAILY_REWARD_BP = 50; // 0.5%
     uint256 public constant MAX_TOTAL_REWARD_BP = 2000; // 20%
+
+    // ----- Structs -----
+    struct UserData {
+        uint256 lastClaim;
+        uint256 stakedBalance;
+        uint256 stakeTimestamp;
+        bool noFee;
+    }
+
+    struct Partner {
+        string name;
+        uint256 tgstPerUnit;
+        bool active;
+    }
 
     // ----- State Variables -----
     address public feeCollector;
@@ -29,26 +41,15 @@ contract TGSTTokenV4Lunar is ERC20, Ownable, ReentrancyGuard, Pausable {
     uint256 public burnOnSwapBP = 0;      // 0% default
     uint256 public feeOnTransferBP = 0;   // optional fee
 
-    mapping(address => bool) public noFee;
-    mapping(address => uint256) public lastClaim;
-    uint256 public claimAmount = 100 * 1e18;
-    uint256 public referralBonus = 50 * 1e18;
-
-    uint256 public dailyRewardBP = 10;
-    uint256 public maxTotalRewardBP = 1000;
-
-    uint256 public distributionPool;
-    uint256 public rewardPool;
-
-    struct Partner {
-        string name;
-        uint256 tgstPerUnit;
-        bool active;
-    }
+    mapping(address => UserData) public userData;
     mapping(address => Partner) public partners;
 
-    mapping(address => uint256) public stakedBalance;
-    mapping(address => uint256) public stakeTimestamp;
+    uint256 public claimAmount = 100 * 1e18;
+    uint256 public referralBonus = 50 * 1e18;
+    uint256 public dailyRewardBP = 10;
+    uint256 public maxTotalRewardBP = 1000;
+    uint256 public distributionPool;
+    uint256 public rewardPool;
 
     // ----- Events -----
     event FeeCollectorUpdated(address indexed oldCollector, address indexed newCollector);
@@ -67,14 +68,14 @@ contract TGSTTokenV4Lunar is ERC20, Ownable, ReentrancyGuard, Pausable {
     constructor(address _feeCollector, address _timelock)
         ERC20("Token Global Smart Trade", "TGST")
         Ownable(msg.sender)
-    }
+    {
         require(_feeCollector != address(0), "TGST: Invalid fee collector");
         require(_timelock != address(0), "TGST: Invalid timelock");
         feeCollector = _feeCollector;
         timelock = TimelockController(payable(_timelock));
-        noFee[msg.sender] = true;
-        noFee[_feeCollector] = true;
-        noFee[_timelock] = true;
+        userData[msg.sender].noFee = true;
+        userData[_feeCollector].noFee = true;
+        userData[_timelock].noFee = true;
         _mint(msg.sender, MAX_SUPPLY);
     }
 
@@ -89,7 +90,7 @@ contract TGSTTokenV4Lunar is ERC20, Ownable, ReentrancyGuard, Pausable {
         require(_newCollector != address(0), "TGST: Invalid fee collector");
         emit FeeCollectorUpdated(feeCollector, _newCollector);
         feeCollector = _newCollector;
-        noFee[_newCollector] = true;
+        userData[_newCollector].noFee = true;
     }
 
     function setBurnRates(uint256 transferBP, uint256 redeemBP, uint256 swapBP) external onlyTimelock {
@@ -110,11 +111,14 @@ contract TGSTTokenV4Lunar is ERC20, Ownable, ReentrancyGuard, Pausable {
     function addOrUpdatePartner(address partnerAddr, string memory name, uint256 tgstPerUnit, bool active) external onlyTimelock {
         require(partnerAddr != address(0), "TGST: Invalid partner address");
         require(tgstPerUnit > 0 && tgstPerUnit < 1e30, "TGST: Invalid tgstPerUnit");
+        require(!partners[partnerAddr].active || partnerAddr == msg.sender, "TGST: Partner already active");
         partners[partnerAddr] = Partner(name, tgstPerUnit, active);
         emit PartnerUpdated(partnerAddr, name, tgstPerUnit, active);
     }
 
-    function setNoFee(address account, bool status) external onlyTimelock { noFee[account] = status; }
+    function setNoFee(address account, bool status) external onlyTimelock {
+        userData[account].noFee = status;
+    }
 
     function setStakingParams(uint256 _dailyRewardBP, uint256 _maxTotalRewardBP) external onlyTimelock {
         require(_dailyRewardBP <= MAX_DAILY_REWARD_BP, "TGST: Max 0.5% daily reward");
@@ -145,28 +149,30 @@ contract TGSTTokenV4Lunar is ERC20, Ownable, ReentrancyGuard, Pausable {
 
     // ----- Claim + Referral -----
     function claimTGST(address referrer) external nonReentrant whenNotPaused {
-        require(block.timestamp - lastClaim[msg.sender] >= 1 days, "TGST: Claim max 1x/day");
+        UserData storage user = userData[msg.sender];
+        require(block.timestamp - user.lastClaim >= 1 days, "TGST: Claim max 1x/day");
         uint256 totalRequired = claimAmount + ((referrer != address(0) && referrer != msg.sender) ? referralBonus : 0);
         require(distributionPool >= totalRequired, "TGST: Insufficient distribution pool");
 
         _transfer(address(this), msg.sender, claimAmount);
         distributionPool -= claimAmount;
-        lastClaim[msg.sender] = block.timestamp;
+        user.lastClaim = block.timestamp;
 
-        uint256 referralAmount = 0;
         if (referrer != address(0) && referrer != msg.sender) {
-            referralAmount = referralBonus;
-            _transfer(address(this), referrer, referralAmount);
-            distributionPool -= referralAmount;
-            emit ReferralReward(referrer, msg.sender, referralAmount);
+            _transfer(address(this), referrer, referralBonus);
+            distributionPool -= referralBonus;
+            emit ReferralReward(referrer, msg.sender, referralBonus);
         }
 
-        emit TGSTClaimed(msg.sender, claimAmount, referrer, referralAmount);
+        emit TGSTClaimed(msg.sender, claimAmount, referrer, (referrer != address(0) && referrer != msg.sender) ? referralBonus : 0);
     }
 
     // ----- Dynamic Burn + Fee on Transfer -----
     function _transfer(address sender, address recipient, uint256 amount) internal override whenNotPaused {
-        if (noFee[sender] || noFee[recipient]) {
+        UserData storage senderData = userData[sender];
+        UserData storage recipientData = userData[recipient];
+
+        if (senderData.noFee || recipientData.noFee) {
             super._transfer(sender, recipient, amount);
         } else {
             uint256 burnAmount = (amount * burnOnTransferBP) / 10000;
@@ -206,30 +212,34 @@ contract TGSTTokenV4Lunar is ERC20, Ownable, ReentrancyGuard, Pausable {
     }
 
     function stakeTGST(uint256 amount) external nonReentrant whenNotPaused {
-        require(amount > 0, Amount > 0");
+        require(amount > 0, "TGST: Amount > 0");
         require(balanceOf(msg.sender) >= amount, "TGST: Insufficient balance");
 
         super._transfer(msg.sender, address(this), amount);
-        stakedBalance[msg.sender] += amount;
-        stakeTimestamp[msg.sender] = block.timestamp;
+        UserData storage user = userData[msg.sender];
+        user.stakedBalance += amount;
+        user.stakeTimestamp = block.timestamp;
         emit Staked(msg.sender, amount);
     }
 
     function unstakeTGST() external nonReentrant whenNotPaused {
-        uint256 staked = stakedBalance[msg.sender];
-        require(staked > 0, "TGST: Nothing staked");
-        require(block.timestamp - stakeTimestamp[msg.sender] >= MIN_STAKE_DURATION, "TGST: Min stake duration not met");
+        UserData storage user = userData[msg.sender];
+        require(user.stakedBalance > 0, "TGST: Nothing staked");
+        require(block.timestamp - user.stakeTimestamp >= MIN_STAKE_DURATION, "TGST: Min stake duration not met");
 
-        uint256 daysStaked = (block.timestamp - stakeTimestamp[msg.sender]) / 1 days;
-        uint256 reward = (staked * dailyRewardBP * daysStaked) / 10000;
-        uint256 maxReward = (staked * maxTotalRewardBP) / 10000;
+        uint256 daysStaked = (block.timestamp - user.stakeTimestamp) / 1 days;
+        uint256 reward = (user.stakedBalance * dailyRewardBP * daysStaked) / 10000;
+        uint256 maxReward = (user.stakedBalance * maxTotalRewardBP) / 10000;
         reward = reward > maxReward ? maxReward : reward;
 
-        require(rewardPool >= reward, "TGST: Insufficient reward pool");
+        if (rewardPool < reward) {
+            reward = 0; // Permet unstake sans récompense si pool insuffisante
+        } else {
+            rewardPool -= reward;
+        }
 
-        stakedBalance[msg.sender] = 0;
-        rewardPool -= reward;
-
+        uint256 staked = user.stakedBalance;
+        user.stakedBalance = 0;
         super._transfer(address(this), msg.sender, staked + reward);
         emit Unstaked(msg.sender, staked, reward);
     }
@@ -240,11 +250,6 @@ contract TGSTTokenV4Lunar is ERC20, Ownable, ReentrancyGuard, Pausable {
         emit TimelockSet(_timelock);
     }
 
-    receive() external payable {
-        revert("TGST: No ETH accepted");
-    }
-
-    fallback() external payable {
-        revert("TGST: No ETH accepted");
-    }
+    receive() external payable { revert("TGST: No ETH accepted"); }
+    fallback() external payable { revert("TGST: No ETH accepted"); }
 }
