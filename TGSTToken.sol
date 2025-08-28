@@ -56,7 +56,7 @@ contract TGSTTokenV4Lunar is ERC20, Ownable, ReentrancyGuard, Pausable {
     event TransferFeeUpdated(uint256 feeOnTransferBP);
     event PartnerUpdated(address indexed partner, string name, uint256 tgstPerUnit, bool active);
     event TGSTClaimed(address indexed user, uint256 amount, address indexed referrer, uint256 referralAmount);
-    event ReferralReward(address indexed referrer, address indexed referee, uint264 amount);
+    event ReferralReward(address indexed referrer, address indexed referee, uint256 amount);
     event TokensBurned(address indexed user, uint256 amount, uint256 burnAmount, string reason);
     event ServiceConverted(address indexed user, address indexed partner, uint256 tgstAmount, uint256 serviceUnits);
     event Staked(address indexed user, uint256 amount);
@@ -67,7 +67,7 @@ contract TGSTTokenV4Lunar is ERC20, Ownable, ReentrancyGuard, Pausable {
     constructor(address _feeCollector, address _timelock)
         ERC20("Token Global Smart Trade", "TGST")
         Ownable(msg.sender)
-    {
+    }
         require(_feeCollector != address(0), "TGST: Invalid fee collector");
         require(_timelock != address(0), "TGST: Invalid timelock");
         feeCollector = _feeCollector;
