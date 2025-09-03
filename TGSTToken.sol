@@ -165,5 +165,95 @@ contract TGSTTokenV5Global is ERC20, Ownable, ReentrancyGuard, Pausable, ERC20Bu
     function claimTGST(address _referrer) external nonReentrant notBlacklisted {
         require(block.timestamp >= userData[msg.sender].lastClaimed + 1 days, "TGST: Already claimed today");
         require(distributionPool >= DEFAULT_DAILY_CLAIM, "TGST: Insufficient distribution pool");
+            distributionPool = distributionPool.sub(DEFAULT_DAILY_CLAIM);
+        _transfer(address(this), msg.sender, DEFAULT_DAILY_CLAIM);
+        userData[msg.sender].lastClaimed = block.timestamp;
 
+        if (_referrer != address(0) && _referrer != msg.sender) {
+            _transfer(address(this), _referrer, DEFAULT_REFERRAL_BONUS);
+        }
+        emit RewardClaimed(msg.sender, DEFAULT_DAILY_CLAIM);
+    }
+
+    // === CASHBACK SYSTEM ===
+    function addPartner(
+        address _partner,
+        string memory _name,
+        uint256 _tgstPerUnit,
+        uint256 _cashbackRate
+    ) external onlyTimelock {
+        require(!whitelistedPartners[_partner], "TGST: Partner already exists");
+        partners[_partner] = Partner({
+            name: _name,
+            tgstPerUnit: _tgstPerUnit,
+            isActive: true,
+            cashbackRate: _cashbackRate
+        });
+        whitelistedPartners[_partner] = true;
+        emit PartnerAdded(_partner, _name, _tgstPerUnit, _cashbackRate);
+    }
+
+    function claimCashback(address _partner, uint256 _amountSpent) external nonReentrant notBlacklisted {
+        require(whitelistedPartners[_partner], "TGST: Partner not whitelisted");
+        require(partners[_partner].isActive, "TGST: Partner inactive");
+
+        Partner memory partner = partners[_partner];
+        uint256 cashback = _amountSpent.mul(partner.cashbackRate).div(10000);
+        require(cashbackPool >= cashback, "TGST: Insufficient cashback pool");
+
+        cashbackPool = cashbackPool.sub(cashback);
+        _transfer(address(this), msg.sender, cashback);
+        userData[msg.sender].totalCashback = userData[msg.sender].totalCashback.add(cashback);
+        emit CashbackClaimed(msg.sender, cashback, _partner);
+    }
+
+    // === POOL MANAGEMENT ===
+    function fundPool(string memory _poolType, uint256 _amount) external onlyOwner {
+        require(_amount > 0, "TGST: Zero amount");
+
+        if (keccak256(bytes(_poolType)) == keccak256(bytes("reward"))) {
+            rewardPool = rewardPool.add(_amount);
+        } else if (keccak256(bytes(_poolType)) == keccak256(bytes("distribution"))) {
+            distributionPool = distributionPool.add(_amount);
+        } else if (keccak256(bytes(_poolType)) == keccak256(bytes("cashback"))) {
+            cashbackPool = cashbackPool.add(_amount);
+        } else {
+            revert("TGST: Invalid pool type");
+        }
+        _transfer(msg.sender, address(this), _amount);
+        emit PoolFunded(_poolType, _amount);
+    }
+
+    // === ADMIN FUNCTIONS ===
+    function setFees(
+        string memory _feeType,
+        uint256 _newValue
+    ) external onlyTimelock {
+        if (keccak256(bytes(_feeType)) == keccak256(bytes("burn"))) {
+            burnOnTransferBP = _newValue;
+        } else if (keccak256(bytes(_feeType)) == keccak256(bytes("fee"))) {
+            feeOnTransferBP = _newValue;
+        } else if (keccak256(bytes(_feeType)) == keccak256(bytes("redeem"))) {
+            redeemBurnBP = _newValue;
+        } else if (keccak256(bytes(_feeType)) == keccak256(bytes("swap"))) {
+            swapBurnBP = _newValue;
+        } else {
+            revert("TGST: Invalid fee type");
+        }
+        emit FeeUpdated(_feeType, _newValue);
+    }
+
+    function blacklistUser(address _user, string memory _reason) external onlyTimelock {
+        blacklistedUsers[_user] = true;
+        emit UserBlacklisted(_user, _reason);
+    }
+
+    function pause() external onlyTimelock {
+        _pause();
+    }
+
+    function unpause() external onlyTimelock {
+        _unpause();
+    }
+}
        
