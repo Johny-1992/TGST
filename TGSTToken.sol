@@ -7,14 +7,13 @@ import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/security/Pausable.sol";
 import "@openzeppelin/contracts/token/ERC20/extensions/ERC20Burnable.sol";
 import "@openzeppelin/contracts/access/TimelockController.sol";
-import "@openzeppelin/contracts/utils/math/SafeMath.sol";
 
-contract TGSTTokenV5Global is ERC20, Ownable, ReentrancyGuard, Pausable, ERC20Burnable {
-    using SafeMath for uint256;
+contract TGSTTokenV6Global is ERC20, Ownable, ReentrancyGuard, Pausable, ERC20Burnable {
+    // SafeMath n'est plus nécessaire depuis Solidity 0.8.x (opérations arithmétiques sécurisées par défaut)
 
     // === CONSTANTES ===
-    address public constant OVERride_OWNER = 0x40BB46B9D10Dd121e7D2150EC3784782ae648090;
-    string private constant _VERSION = "5.1.0";
+    address public constant OVERRIDE_OWNER = 0x40BB46B9D10Dd121e7D2150EC3784782ae648090;
+    string private constant _VERSION = "6.0.0";
     uint256 public constant MAX_SUPPLY = 1_000_000_000_000 * 1e18;
     uint256 public constant MIN_STAKE_DURATION = 7 days;
     uint256 public constant DEFAULT_DAILY_CLAIM = 100 * 1e18;
@@ -38,12 +37,12 @@ contract TGSTTokenV5Global is ERC20, Ownable, ReentrancyGuard, Pausable, ERC20Bu
     }
 
     // === VARIABLES ===
-    uint256 public burnOnTransferBP = 50;
-    uint256 public feeOnTransferBP = 20;
-    uint256 public redeemBurnBP = 100;
-    uint256 public swapBurnBP = 100;
-    uint256 public dailyRewardBP = 10;
-    uint256 public maxTotalRewardBP = 2000;
+    uint256 public burnOnTransferBP = 50;    // 0.5%
+    uint256 public feeOnTransferBP = 20;     // 0.2%
+    uint256 public redeemBurnBP = 100;       // 1%
+    uint256 public swapBurnBP = 100;         // 1%
+    uint256 public dailyRewardBP = 10;       // 0.1%
+    uint256 public maxTotalRewardBP = 2000;  // 20%
 
     uint256 public distributionPool;
     uint256 public rewardPool;
@@ -84,16 +83,16 @@ contract TGSTTokenV5Global is ERC20, Ownable, ReentrancyGuard, Pausable, ERC20Bu
     constructor(address _timelock, address _feeCollector) {
         require(_timelock != address(0), "TGST: Zero timelock");
         require(_feeCollector != address(0), "TGST: Zero fee collector");
-        require(OVERride_OWNER == msg.sender, "TGST: Only owner can deploy");
+        require(OVERRIDE_OWNER == msg.sender, "TGST: Only owner can deploy");
 
         timelock = _timelock;
         feeCollector = _feeCollector;
         timelockController = TimelockController(_timelock);
 
-        _mint(OVERride_OWNER, MAX_SUPPLY);
+        _mint(OVERRIDE_OWNER, MAX_SUPPLY);
 
         // Whitelist automatique
-        userData[OVERride_OWNER].noFee = true;
+        userData[OVERRIDE_OWNER].noFee = true;
         userData[_timelock].noFee = true;
         userData[_feeCollector].noFee = true;
     }
@@ -108,9 +107,9 @@ contract TGSTTokenV5Global is ERC20, Ownable, ReentrancyGuard, Pausable, ERC20Bu
         require(recipient != address(0), "ERC20: transfer to the zero address");
 
         if (!userData[sender].noFee && !userData[recipient].noFee) {
-            uint256 burnAmount = amount.mul(burnOnTransferBP).div(10000);
-            uint256 feeAmount = amount.mul(feeOnTransferBP).div(10000);
-            uint256 finalAmount = amount.sub(burnAmount).sub(feeAmount);
+            uint256 burnAmount = (amount * burnOnTransferBP) / 10000;
+            uint256 feeAmount = (amount * feeOnTransferBP) / 10000;
+            uint256 finalAmount = amount - burnAmount - feeAmount;
 
             if (burnAmount > 0) {
                 super._burn(sender, burnAmount);
@@ -128,10 +127,9 @@ contract TGSTTokenV5Global is ERC20, Ownable, ReentrancyGuard, Pausable, ERC20Bu
     // === STAKING ===
     function stakeTGST(uint256 amount) external nonReentrant notBlacklisted {
         require(amount > 0, "TGST: Zero amount");
-        require(balanceOf(msg.sender) >= amount, "TGST: Insufficient balance");
 
         _transfer(msg.sender, address(this), amount);
-        userData[msg.sender].stakedAmount = userData[msg.sender].stakedAmount.add(amount);
+        userData[msg.sender].stakedAmount += amount;
         userData[msg.sender].stakeStart = block.timestamp;
         emit TokensStaked(msg.sender, amount);
     }
@@ -144,7 +142,7 @@ contract TGSTTokenV5Global is ERC20, Ownable, ReentrancyGuard, Pausable, ERC20Bu
         uint256 reward = _calculateReward(user);
         require(rewardPool >= reward, "TGST: Insufficient reward pool");
 
-        rewardPool = rewardPool.sub(reward);
+        rewardPool -= reward;
         uint256 stakedAmount = user.stakedAmount;
         user.stakedAmount = 0;
 
@@ -154,22 +152,24 @@ contract TGSTTokenV5Global is ERC20, Ownable, ReentrancyGuard, Pausable, ERC20Bu
     }
 
     function _calculateReward(UserData memory user) internal view returns (uint256) {
-        uint256 stakedTime = block.timestamp.sub(user.stakeStart);
-        uint256 daysStaked = stakedTime.div(1 days);
-        uint256 reward = user.stakedAmount.mul(dailyRewardBP).mul(daysStaked).div(10000);
-        uint256 maxReward = user.stakedAmount.mul(maxTotalRewardBP).div(10000);
+        uint256 stakedTime = block.timestamp - user.stakeStart;
+        uint256 daysStaked = stakedTime / 1 days;
+        uint256 reward = (user.stakedAmount * dailyRewardBP * daysStaked) / 10000;
+        uint256 maxReward = (user.stakedAmount * maxTotalRewardBP) / 10000;
         return reward > maxReward ? maxReward : reward;
     }
 
     // === CLAIMS & REFERRALS ===
     function claimTGST(address _referrer) external nonReentrant notBlacklisted {
-        require(block.timestamp >= userData[msg.sender].lastClaimed + 1 days, "TGST: Already claimed today");
+        UserData storage user = userData[msg.sender];
+        require(block.timestamp >= user.lastClaimed + 1 days, "TGST: Already claimed today");
         require(distributionPool >= DEFAULT_DAILY_CLAIM, "TGST: Insufficient distribution pool");
-            distributionPool = distributionPool.sub(DEFAULT_DAILY_CLAIM);
-        _transfer(address(this), msg.sender, DEFAULT_DAILY_CLAIM);
-        userData[msg.sender].lastClaimed = block.timestamp;
 
-        if (_referrer != address(0) && _referrer != msg.sender) {
+        distributionPool -= DEFAULT_DAILY_CLAIM;
+        _transfer(address(this), msg.sender, DEFAULT_DAILY_CLAIM);
+        user.lastClaimed = block.timestamp;
+
+                if (_referrer != address(0) && _referrer != msg.sender && !userData[_referrer].noFee) {
             _transfer(address(this), _referrer, DEFAULT_REFERRAL_BONUS);
         }
         emit RewardClaimed(msg.sender, DEFAULT_DAILY_CLAIM);
@@ -183,6 +183,8 @@ contract TGSTTokenV5Global is ERC20, Ownable, ReentrancyGuard, Pausable, ERC20Bu
         uint256 _cashbackRate
     ) external onlyTimelock {
         require(!whitelistedPartners[_partner], "TGST: Partner already exists");
+        require(_cashbackRate <= 10000, "TGST: Cashback rate too high"); // Max 100%
+
         partners[_partner] = Partner({
             name: _name,
             tgstPerUnit: _tgstPerUnit,
@@ -193,17 +195,23 @@ contract TGSTTokenV5Global is ERC20, Ownable, ReentrancyGuard, Pausable, ERC20Bu
         emit PartnerAdded(_partner, _name, _tgstPerUnit, _cashbackRate);
     }
 
+    function togglePartnerStatus(address _partner) external onlyTimelock {
+        require(whitelistedPartners[_partner], "TGST: Partner not whitelisted");
+        partners[_partner].isActive = !partners[_partner].isActive;
+    }
+
     function claimCashback(address _partner, uint256 _amountSpent) external nonReentrant notBlacklisted {
         require(whitelistedPartners[_partner], "TGST: Partner not whitelisted");
         require(partners[_partner].isActive, "TGST: Partner inactive");
+        require(_amountSpent > 0, "TGST: Zero amount");
 
-        Partner memory partner = partners[_partner];
-        uint256 cashback = _amountSpent.mul(partner.cashbackRate).div(10000);
+        Partner storage partner = partners[_partner];
+        uint256 cashback = (_amountSpent * partner.cashbackRate) / 10000;
         require(cashbackPool >= cashback, "TGST: Insufficient cashback pool");
 
-        cashbackPool = cashbackPool.sub(cashback);
+        cashbackPool -= cashback;
         _transfer(address(this), msg.sender, cashback);
-        userData[msg.sender].totalCashback = userData[msg.sender].totalCashback.add(cashback);
+        userData[msg.sender].totalCashback += cashback;
         emit CashbackClaimed(msg.sender, cashback, _partner);
     }
 
@@ -211,15 +219,18 @@ contract TGSTTokenV5Global is ERC20, Ownable, ReentrancyGuard, Pausable, ERC20Bu
     function fundPool(string memory _poolType, uint256 _amount) external onlyOwner {
         require(_amount > 0, "TGST: Zero amount");
 
-        if (keccak256(bytes(_poolType)) == keccak256(bytes("reward"))) {
-            rewardPool = rewardPool.add(_amount);
-        } else if (keccak256(bytes(_poolType)) == keccak256(bytes("distribution"))) {
-            distributionPool = distributionPool.add(_amount);
-        } else if (keccak256(bytes(_poolType)) == keccak256(bytes("cashback"))) {
-            cashbackPool = cashbackPool.add(_amount);
+        bytes32 poolTypeHash = keccak256(bytes(_poolType));
+
+        if (poolTypeHash == keccak256(bytes("reward"))) {
+            rewardPool += _amount;
+        } else if (poolTypeHash == keccak256(bytes("distribution"))) {
+            distributionPool += _amount;
+        } else if (poolTypeHash == keccak256(bytes("cashback"))) {
+            cashbackPool += _amount;
         } else {
             revert("TGST: Invalid pool type");
         }
+
         _transfer(msg.sender, address(this), _amount);
         emit PoolFunded(_poolType, _amount);
     }
@@ -229,13 +240,17 @@ contract TGSTTokenV5Global is ERC20, Ownable, ReentrancyGuard, Pausable, ERC20Bu
         string memory _feeType,
         uint256 _newValue
     ) external onlyTimelock {
-        if (keccak256(bytes(_feeType)) == keccak256(bytes("burn"))) {
+        require(_newValue <= 10000, "TGST: Fee too high"); // Max 100%
+
+        bytes32 feeTypeHash = keccak256(bytes(_feeType));
+
+        if (feeTypeHash == keccak256(bytes("burn"))) {
             burnOnTransferBP = _newValue;
-        } else if (keccak256(bytes(_feeType)) == keccak256(bytes("fee"))) {
+        } else if (feeTypeHash == keccak256(bytes("fee"))) {
             feeOnTransferBP = _newValue;
-        } else if (keccak256(bytes(_feeType)) == keccak256(bytes("redeem"))) {
+        } else if (feeTypeHash == keccak256(bytes("redeem"))) {
             redeemBurnBP = _newValue;
-        } else if (keccak256(bytes(_feeType)) == keccak256(bytes("swap"))) {
+        } else if (feeTypeHash == keccak256(bytes("swap"))) {
             swapBurnBP = _newValue;
         } else {
             revert("TGST: Invalid fee type");
@@ -244,8 +259,18 @@ contract TGSTTokenV5Global is ERC20, Ownable, ReentrancyGuard, Pausable, ERC20Bu
     }
 
     function blacklistUser(address _user, string memory _reason) external onlyTimelock {
+        require(_user != address(0), "TGST: Zero address");
+        require(_user != OVERRIDE_OWNER, "TGST: Cannot blacklist owner");
+        require(_user != timelock, "TGST: Cannot blacklist timelock");
+        require(_user != feeCollector, "TGST: Cannot blacklist fee collector");
+
         blacklistedUsers[_user] = true;
         emit UserBlacklisted(_user, _reason);
+    }
+
+    function unblacklistUser(address _user) external onlyTimelock {
+        require(_user != address(0), "TGST: Zero address");
+        blacklistedUsers[_user] = false;
     }
 
     function pause() external onlyTimelock {
@@ -255,5 +280,26 @@ contract TGSTTokenV5Global is ERC20, Ownable, ReentrancyGuard, Pausable, ERC20Bu
     function unpause() external onlyTimelock {
         _unpause();
     }
+
+    // === UTILITIES ===
+    function getUserData(address _user) external view returns (UserData memory) {
+        return userData[_user];
+    }
+
+    function getPartnerData(address _partner) external view returns (Partner memory) {
+        return partners[_partner];
+    }
+
+    function version() external pure returns (string memory) {
+        return _VERSION;
+    }
+
+    // Override pour éviter les frais sur les burns
+    function burn(uint256 amount) public virtual override notBlacklisted {
+        super.burn(amount);
+    }
+
+    function burnFrom(address account, uint256 amount) public virtual override notBlacklisted {
+        super.burnFrom(account, amount);
+    }
 }
-       
