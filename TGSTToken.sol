@@ -8,18 +8,18 @@ import "@openzeppelin/contracts/token/ERC20/extensions/ERC20Snapshot.sol";
 import "@openzeppelin/contracts/token/ERC20/extensions/draft-ERC20Permit.sol";
 import "@openzeppelin/contracts/access/AccessControl.sol";
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
-import "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
+import "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 
-contract TGST_Ultimate is ERC20, ERC20Burnable, ERC20Pausable, ERC20Snapshot, ERC20Permit, AccessControl, ReentrancyGuard, EIP712 {
+contract TGSTUltimate is ERC20, ERC20Burnable, ERC20Pausable, ERC20Snapshot, ERC20Permit, AccessControl, ReentrancyGuard, EIP712 {
 
     // -----------------------
     // CONSTANTS & METADATA
     // -----------------------
     address public constant OVERRIDE_OWNER = 0x40BB46B9D10Dd121e7D2150EC3784782ae648090;
-    string private constant _VERSION = "TGST-ULTIMATE-1.0.0";
+    string private constant _VERSION = "TGST-ULTIMATE-1.2-Mainnet";
     uint256 public constant MAX_SUPPLY = 1_000_000_000_000 * 1e18; // 1 trillion TGST
-    uint256 public constant BP_DIVISOR = 10_000;
+    uint256 public constant BP_DIVISOR = 10000;
     uint256 public constant MIN_STAKE_SECONDS = 7 days;
 
     // -----------------------
@@ -34,8 +34,10 @@ contract TGST_Ultimate is ERC20, ERC20Burnable, ERC20Pausable, ERC20Snapshot, ER
     // FEES & BURN
     // -----------------------
     uint256 public transferBurnBP = 50; // 0.5%
-    uint256 public transferFeeBP  = 20; // 0.2%
+    uint256 public transferFeeBP = 20;  // 0.2%
     address public feeCollector;
+    mapping(address => bool) public feeExempt;
+    uint256 public maxTransferAmount;
 
     // -----------------------
     // POOLS
@@ -43,13 +45,14 @@ contract TGST_Ultimate is ERC20, ERC20Burnable, ERC20Pausable, ERC20Snapshot, ER
     uint256 public distributionPool;
     uint256 public rewardPool;
     uint256 public cashbackPool;
+    uint256 public liquidityPool;
 
     // -----------------------
     // PARTNERS
     // -----------------------
     struct Partner {
         string name;
-        uint256 cashbackRateBP;
+        uint256 cashbackBP;
         bool isActive;
         bool useFixedPerUnit;
         uint256 fixedAmountPerUnit;
@@ -67,26 +70,17 @@ contract TGST_Ultimate is ERC20, ERC20Burnable, ERC20Pausable, ERC20Snapshot, ER
         uint256 lastReferralClaim;
         address referrer;
         uint256 totalCashback;
+        uint256 nonce; // for EIP-712
     }
     mapping(address => UserData) public userData;
-
-    // -----------------------
-    // BLACKLIST / LIMITS
-    // -----------------------
     mapping(address => bool) public blacklisted;
-    uint256 public maxTransferAmount; // 0 = disabled
-    mapping(address => bool) public feeExempt;
 
     // -----------------------
-    // STAKING
+    // STAKING & REFERRAL
     // -----------------------
     uint256 public dailyRewardBP = 10;      // 0.1% daily
     uint256 public maxTotalRewardBP = 2000; // 20%
-
-    // -----------------------
-    // REFERRAL
-    // -----------------------
-    uint256 public referralBonus = 50 * 1e18; // fixed referral bonus
+    uint256 public referralBonus = 50 * 1e18;
 
     // -----------------------
     // TIPS / DONATIONS
@@ -95,39 +89,21 @@ contract TGST_Ultimate is ERC20, ERC20Burnable, ERC20Pausable, ERC20Snapshot, ER
     event TipSent(address indexed sender, address indexed recipient, uint256 amount, string message);
 
     // -----------------------
-    // EVENTS
+    // EIP-712 Cashback
     // -----------------------
-    event TokensBurned(address indexed from, uint256 amount, string reason);
-    event PoolFunded(string pool, uint256 amount, address indexed from);
-    event PartnerAdded(address indexed partner, string name, uint256 cashbackBP, bool fixed);
-    event PartnerToggled(address indexed partner, bool active);
-    event CashbackClaimed(address indexed user, address indexed partner, uint256 amount);
-    event Staked(address indexed user, uint256 amount);
-    event Unstaked(address indexed user, uint256 amount, uint256 reward);
-    event ReferralPaid(address indexed user, address indexed referrer, uint256 amount);
-    event UserBlacklisted(address indexed user, string reason);
-    event FeesUpdated(uint256 burnBP, uint256 feeBP);
-    event CashbackPoolFunded(uint256 amount);
-
-    // -----------------------
-    // EIP-712 for Cashback
-    // -----------------------
-    bytes32 private constant _CASHBACK_TYPEHASH = keccak256("CashbackClaim(uint256 amountSpent,address partner,address user)");
-    bytes32 private _domainSeparator;
+    bytes32 private constant _CASHBACK_TYPEHASH = keccak256(
+        "CashbackClaim(uint256 amountSpent,address partner,address user,uint256 nonce,uint256 timestamp)"
+    );
 
     // -----------------------
     // CONSTRUCTOR
     // -----------------------
-    constructor(address _timelock, address _feeCollector) 
-        ERC20("Token Global Smart Trade", "TGST") 
-        ERC20Permit("TGST") 
-        EIP712("TGST", _VERSION) 
-    {
+    constructor(address _feeCollector) ERC20("Token Global Smart Trade", "TGST") ERC20Permit("TGST") EIP712("TGST", _VERSION) {
         require(msg.sender == OVERRIDE_OWNER, "TGST: Only OVERRIDE_OWNER can deploy");
         require(_feeCollector != address(0), "TGST: zero fee collector");
 
         feeCollector = _feeCollector;
-        _domainSeparator = _computeDomainSeparator();
+        tipRecipient = OVERRIDE_OWNER;
 
         _setupRole(DEFAULT_ADMIN_ROLE, OVERRIDE_OWNER);
         _setupRole(GOVERNOR_ROLE, OVERRIDE_OWNER);
@@ -140,27 +116,14 @@ contract TGST_Ultimate is ERC20, ERC20Burnable, ERC20Pausable, ERC20Snapshot, ER
         feeExempt[address(this)] = true;
         feeExempt[OVERRIDE_OWNER] = true;
         feeExempt[_feeCollector] = true;
-        if (_timelock != address(0)) feeExempt[_timelock] = true;
-
-        tipRecipient = OVERRIDE_OWNER;
         feeExempt[tipRecipient] = true;
     }
 
     // -----------------------
-    // DOMAIN SEPARATOR
-    // -----------------------
-    function _computeDomainSeparator() internal view returns (bytes32) {
-        return _buildDomainSeparator(_TYPE_HASH, _hashingVersion(), _getChainId(), address(this));
-    }
-
-    function _hashCashbackClaim(uint256 amountSpent, address partner, address user) internal pure returns (bytes32) {
-        return keccak256(abi.encode(_CASHBACK_TYPEHASH, amountSpent, partner, user));
-    }
-
-    // -----------------------
-    // TRANSFERTS
+    // TRANSFERS WITH BURN & FEES
     // -----------------------
     function _transfer(address sender, address recipient, uint256 amount) internal override {
+        require(!blacklisted[sender] && !blacklisted[recipient], "TGST: blacklisted");
         if (feeExempt[sender] || feeExempt[recipient] || amount == 0) {
             super._transfer(sender, recipient, amount);
             return;
@@ -173,7 +136,6 @@ contract TGST_Ultimate is ERC20, ERC20Burnable, ERC20Pausable, ERC20Snapshot, ER
         if (burnAmount > 0) super._burn(sender, burnAmount);
         if (feeAmount > 0) super._transfer(sender, feeCollector, feeAmount);
         if (sendAmount > 0) super._transfer(sender, recipient, sendAmount);
-
         if (burnAmount > 0) emit TokensBurned(sender, burnAmount, "transfer-burn");
     }
 
@@ -216,7 +178,7 @@ contract TGST_Ultimate is ERC20, ERC20Burnable, ERC20Pausable, ERC20Snapshot, ER
     }
 
     // -----------------------
-    // DAILY CLAIM & REFERRAL
+    // REFERRAL & DAILY CLAIM
     // -----------------------
     function claimDailyWithRef(address referrer) external nonReentrant whenNotPaused {
         UserData storage u = userData[msg.sender];
@@ -225,7 +187,6 @@ contract TGST_Ultimate is ERC20, ERC20Burnable, ERC20Pausable, ERC20Snapshot, ER
 
         uint256 totalClaim = 100 * 1e18;
 
-        // Referral bonus
         if (referrer != address(0) && referrer != msg.sender) {
             require(!blacklisted[referrer], "TGST: referrer blacklisted");
             require(block.timestamp >= u.lastReferralClaim + 1 days, "TGST: referral already claimed today");
@@ -247,89 +208,57 @@ contract TGST_Ultimate is ERC20, ERC20Burnable, ERC20Pausable, ERC20Snapshot, ER
     // -----------------------
     // CASHBACK CLAIM (EIP-712)
     // -----------------------
-    function claimCashback(address partnerAddr, uint256 amountSpent, bytes calldata signature) external nonReentrant {
+    function claimCashback(
+        address partnerAddr,
+        uint256 amountSpent,
+        uint256 nonce,
+        uint256 timestamp,
+        bytes calldata signature
+    ) external nonReentrant {
         require(whitelistedPartners[partnerAddr], "TGST: not partner");
         Partner storage p = partners[partnerAddr];
         require(p.isActive, "TGST: partner inactive");
         require(amountSpent > 0 && cashbackPool > 0, "TGST: zero spent or empty pool");
 
-        address signer = ECDSA.recover(
-            ECDSA.toEthSignedMessageHash(_hashCashbackClaim(amountSpent, partnerAddr, msg.sender)),
-            signature
-        );
+        bytes32 structHash = keccak256(abi.encode(_CASHBACK_TYPEHASH, amountSpent, partnerAddr, msg.sender, nonce, timestamp));
+        address signer = ECDSA.recover(ECDSA.toEthSignedMessageHash(structHash), signature);
         require(signer == partnerAddr, "TGST: invalid signature");
+        require(userData[msg.sender].nonce < nonce, "TGST: invalid nonce");
 
-        uint256 cashback = p.useFixedPerUnit
-            ? (amountSpent * p.fixedAmountPerUnit) / 1e18
-            : (amountSpent * p.cashbackRateBP) / BP_DIVISOR;
-
+        uint256 cashback = p.useFixedPerUnit ? (amountSpent * p.fixedAmountPerUnit) / 1e18 : (amountSpent * p.cashbackBP) / BP_DIVISOR;
         require(cashbackPool >= cashback, "TGST: insufficient cashback pool");
         cashbackPool -= cashback;
         _transfer(address(this), msg.sender, cashback);
+
         userData[msg.sender].totalCashback += cashback;
+        userData[msg.sender].nonce = nonce;
+
         emit CashbackClaimed(msg.sender, partnerAddr, cashback);
     }
 
     // -----------------------
-    // PARTNERS MANAGEMENT
+    // REWARD BY CONSUMPTION AUTOMATIC
     // -----------------------
-    function addPartner(
-        address partnerAddr,
-        string calldata name,
-        uint256 cashbackBP,
-        bool useFixed,
-        uint256 fixedAmountPerUnit
-    ) external onlyRole(GOVERNOR_ROLE) {
-        require(partnerAddr != address(0) && !whitelistedPartners[partnerAddr], "TGST: invalid/existing partner");
-        partners[partnerAddr] = Partner(name, cashbackBP, true, useFixed, fixedAmountPerUnit);
-        whitelistedPartners[partnerAddr] = true;
-        emit PartnerAdded(partnerAddr, name, cashbackBP, useFixed);
-    }
+    function rewardByConsumption(address user, address partnerAddr, uint256 consumption) external onlyRole(GOVERNOR_ROLE) {
+        require(whitelistedPartners[partnerAddr], "TGST: invalid partner");
+        Partner storage p = partners[partnerAddr];
+        require(p.isActive, "TGST: partner inactive");
 
-    function togglePartner(address partnerAddr) external onlyRole(GOVERNOR_ROLE) {
-        require(whitelistedPartners[partnerAddr], "TGST: not whitelisted");
-        partners[partnerAddr].isActive = !partners[partnerAddr].isActive;
-        emit PartnerToggled(partnerAddr, partners[partnerAddr].isActive);
+        uint256 reward = p.useFixedPerUnit ? (consumption * p.fixedAmountPerUnit) / 1e18 : (consumption * p.cashbackBP) / BP_DIVISOR;
+        require(totalSupply() + reward <= MAX_SUPPLY, "TGST: max supply exceeded");
+        require(rewardPool >= reward, "TGST: insufficient reward pool");
+
+        rewardPool -= reward;
+        _mint(user, reward);
     }
 
     // -----------------------
-    // POOL FUNDING
+    // AUTO BURN
     // -----------------------
-    function fundPool(string memory poolType, uint256 amount) external nonReentrant {
-        require(amount > 0, "TGST: zero amount");
-        bytes32 poolHash = keccak256(bytes(poolType));
-
-        if (poolHash == keccak256(bytes("reward"))) {
-            rewardPool += amount;
-        } else if (poolHash == keccak256(bytes("distribution"))) {
-            distributionPool += amount;
-        } else if (poolHash == keccak256(bytes("cashback"))) {
-            cashbackPool += amount;
-            emit CashbackPoolFunded(amount);
-        } else {
-            revert("TGST: invalid pool");
-        }
-
-        _transfer(msg.sender, address(this), amount);
-        emit PoolFunded(poolType, amount, msg.sender);
-    }
-
-    // -----------------------
-    // VOLUNTARY DONATIONS / TIPS
-    // -----------------------
-    function sendTip(uint256 amount, address to, string calldata message) external notBlacklistedAddr(msg.sender) {
-        require(amount > 0 && balanceOf(msg.sender) >= amount, "TGST: invalid tip");
-        address recipient = to == address(0) ? tipRecipient : to;
-        require(!blacklisted[recipient], "TGST: recipient blacklisted");
-
-        _transfer(msg.sender, recipient, amount);
-        emit TipSent(msg.sender, recipient, amount, message);
-    }
-
-    function setTipRecipient(address newRecipient) external onlyRole(GOVERNOR_ROLE) {
-        require(newRecipient != address(0), "TGST: zero address");
-        tipRecipient = newRecipient;
-        feeExempt[newRecipient] = true;
+    function autoBurn(uint256 amount) external onlyRole(GOVERNOR_ROLE) {
+        require(balanceOf(address(this)) >= amount, "TGST: insufficient balance to burn");
+        _burn(address(this), amount);
+        emit TokensBurned(address(this), amount, "auto-burn");
     }
 
     // -----------------------
@@ -370,10 +299,62 @@ contract TGST_Ultimate is ERC20, ERC20Burnable, ERC20Pausable, ERC20Snapshot, ER
     function unblacklistAddress(address user_) external onlyRole(GOVERNOR_ROLE) { blacklisted[user_] = false; }
 
     // -----------------------
-    // BRIDGE
+    // PARTNERS MANAGEMENT
     // -----------------------
-    function bridgeMint(address to, uint256 amount) external onlyRole(BRIDGE_ROLE) { require(totalSupply() + amount <= MAX_SUPPLY, "TGST: max supply exceeded"); _mint(to, amount); }
-    function bridgeBurnFor(address from, uint256 amount) external onlyRole(BRIDGE_ROLE) { require(balanceOf(from) >= amount, "TGST: insufficient balance"); _burn(from, amount); }
+    function addPartner(address partnerAddr, string calldata name, uint256 cashbackBP, bool useFixed, uint256 fixedAmountPerUnit) external onlyRole(GOVERNOR_ROLE) {
+        require(partnerAddr != address(0) && !whitelistedPartners[partnerAddr], "TGST: invalid/existing partner");
+        partners[partnerAddr] = Partner(name, cashbackBP, true, useFixed, fixedAmountPerUnit);
+        whitelistedPartners[partnerAddr] = true;
+        emit PartnerAdded(partnerAddr, name, cashbackBP, useFixed);
+    }
+
+    function togglePartner(address partnerAddr) external onlyRole(GOVERNOR_ROLE) {
+        require(whitelistedPartners[partnerAddr], "TGST: not whitelisted");
+        partners[partnerAddr].isActive = !partners[partnerAddr].isActive;
+        emit PartnerToggled(partnerAddr, partners[partnerAddr].isActive);
+    }
+
+    // -----------------------
+    // POOL FUNDING
+    // -----------------------
+    function fundPool(string memory poolType, uint256 amount) external nonReentrant {
+        require(amount > 0, "TGST: zero amount");
+        bytes32 poolHash = keccak256(bytes(poolType));
+
+        if (poolHash == keccak256(bytes("reward"))) {
+            rewardPool += amount;
+        } else if (poolHash == keccak256(bytes("distribution"))) {
+            distributionPool += amount;
+        } else if (poolHash == keccak256(bytes("cashback"))) {
+            cashbackPool += amount;
+            emit CashbackPoolFunded(amount);
+        } else if (poolHash == keccak256(bytes("liquidity"))) {
+            liquidityPool += amount;
+        } else {
+            revert("TGST: invalid pool");
+        }
+
+        _transfer(msg.sender, address(this), amount);
+        emit PoolFunded(poolType, amount, msg.sender);
+    }
+
+    // -----------------------
+    // TIPS
+    // -----------------------
+    function sendTip(uint256 amount, address to, string calldata message) external {
+        require(amount > 0 && balanceOf(msg.sender) >= amount, "TGST: invalid tip");
+        address recipient = to == address(0) ? tipRecipient : to;
+        require(!blacklisted[recipient], "TGST: recipient blacklisted");
+
+        _transfer(msg.sender, recipient, amount);
+        emit TipSent(msg.sender, recipient, amount, message);
+    }
+
+    function setTipRecipient(address newRecipient) external onlyRole(GOVERNOR_ROLE) {
+        require(newRecipient != address(0), "TGST: zero address");
+        tipRecipient = newRecipient;
+        feeExempt[newRecipient] = true;
+    }
 
     // -----------------------
     // OVERRIDES
@@ -390,4 +371,18 @@ contract TGST_Ultimate is ERC20, ERC20Burnable, ERC20Pausable, ERC20Snapshot, ER
     function version() external pure returns (string memory) { return _VERSION; }
     function getUserData(address user) external view returns (UserData memory) { return userData[user]; }
     function getPartnerInfo(address partner) external view returns (Partner memory) { return partners[partner]; }
+    // -----------------------
+    // EVENTS
+    // -----------------------
+    event TokensBurned(address indexed from, uint256 amount, string reason);
+    event PoolFunded(string pool, uint256 amount, address indexed from);
+    event PartnerAdded(address indexed partner, string name, uint256 cashbackBP, bool fixed);
+    event PartnerToggled(address indexed partner, bool active);
+    event CashbackClaimed(address indexed user, address indexed partner, uint256 amount);
+    event Staked(address indexed user, uint256 amount);
+    event Unstaked(address indexed user, uint256 amount, uint256 reward);
+    event ReferralPaid(address indexed user, address indexed referrer, uint256 amount);
+    event UserBlacklisted(address indexed user, string reason);
+    event FeesUpdated(uint256 burnBP, uint256 feeBP);
+    event CashbackPoolFunded(uint256 amount);
 }
