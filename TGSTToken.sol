@@ -2,9 +2,18 @@
 pragma solidity ^0.8.21;
 
 /*
- TGST Ultimate Final - corrected
- - See assistant audit: fixes applied (redeemService super._transfer; mintByConsumptionSigned access; events; admin setters)
- - Important: transfer governance roles to multisig/timelock before mainnet.
+ TGST Ultimate Final - Ideal & Hardened
+ ERC20 token designed for:
+ - Consumption-linked minting (partner-signed)
+ - Cashback (partner-signed)
+ - Staking 7d-1y
+ - Transfers & redeem with 1% burn
+ - Pools (reward, distribution, cashback, liquidity)
+ - Referral system
+ - Donations (TGST & ERC20)
+ - AccessControl, Pausable, Snapshots, Permit, ReentrancyGuard
+ - EIP-712 structured signatures
+ IMPORTANT: After tests, transfer governance roles to multisig / timelock before mainnet.
 */
 
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
@@ -20,14 +29,14 @@ import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 contract TGSTUltimateFinal is
-    ERC20,
-    ERC20Burnable,
-    ERC20Pausable,
-    ERC20Snapshot,
-    ERC20Permit,
-    AccessControl,
-    ReentrancyGuard,
-    EIP712
+    ERC20,           // base ERC20
+    ERC20Burnable,   // allows burning
+    ERC20Pausable,   // allows pausing
+    ERC20Snapshot,   // allows snapshots
+    ERC20Permit,     // ERC20 permit for off-chain approval
+    AccessControl,   // role management
+    ReentrancyGuard, // prevents reentrancy
+    EIP712           // structured signatures
 {
     using SafeERC20 for IERC20;
 
@@ -45,7 +54,7 @@ contract TGSTUltimateFinal is
 
     // --- FEES/BURNS ---
     uint256 public constant TRANSFER_BURN_BP = 100; // 1%
-    uint256 public constant REDEEM_BURN_BP = 100;   // 1% on redeem to service
+    uint256 public constant REDEEM_BURN_BP = 100;   // 1%
     address public feeCollector;
     mapping(address => bool) public feeExempt;
 
@@ -58,12 +67,12 @@ contract TGSTUltimateFinal is
     // --- PARTNERS ---
     struct Partner {
         string name;
-        uint256 cashbackBP; // cashback % in BP when claiming
-        uint256 rewardBP;   // reward per consumption in BP
+        uint256 cashbackBP; // in BP
+        uint256 rewardBP;   // in BP
         bool isActive;
         bool useFixedPerUnit;
-        uint256 fixedAmountPerUnit; // scaled by 1e18
-        address partnerAccount; // EOA or contract used to sign / receive net tokens (0 = off-chain provisioning)
+        uint256 fixedAmountPerUnit;
+        address partnerAccount;
     }
     mapping(address => Partner) public partners;
     mapping(address => bool) public whitelistedPartners;
@@ -84,15 +93,15 @@ contract TGSTUltimateFinal is
     // --- STAKING ---
     uint256 public constant MIN_STAKE_SECONDS = 7 days;
     uint256 public constant MAX_STAKE_SECONDS = 365 days;
-    uint256 public dailyRewardBP = 5; // 0.05% default conservative
+    uint256 public dailyRewardBP = 5; // 0.05%
     uint256 public maxTotalRewardBP = 2000; // 20% max per stake
 
     // --- REFERRAL ---
     uint256 public referralBonus = 50 * 1e18; // fixed
 
-    // --- MINT-BY-CONSUMPTION CONTROL ---
-    uint256 public mintBurnBP = 4000; // burn 40% of minted rewards by default
-    uint256 public dailyMintCap = 5_000_000 * 1e18; // conservative default
+    // --- MINT-BY-CONSUMPTION ---
+    uint256 public mintBurnBP = 4000; // burn 40%
+    uint256 public dailyMintCap = 5_000_000 * 1e18;
     uint256 public globalMintCap = 100_000_000 * 1e18;
     uint256 public mintedToday;
     uint256 public lastMintDay;
@@ -120,7 +129,7 @@ contract TGSTUltimateFinal is
     event DonationTGST(address indexed from, address indexed to, uint256 amount, string note);
     event DonationToken(address indexed from, address indexed to, address token, uint256 amount, string note);
 
-    // admin change events
+    // admin events
     event DailyMintCapUpdated(uint256 newCap);
     event GlobalMintCapUpdated(uint256 newCap);
     event MintBurnBPUpdated(uint256 newBP);
@@ -128,9 +137,14 @@ contract TGSTUltimateFinal is
     event FeeCollectorUpdated(address indexed newCollector);
     event StakingParamsUpdated(uint256 newDailyBP, uint256 newMaxBP);
     event ReferralBonusUpdated(uint256 newReferral);
+    event UserBlacklisted(address indexed user, string reason);
 
-    // --- CONSTRUCTOR ---
-    constructor(address _feeCollector) ERC20("Token Global Smart Trade", "TGST") ERC20Permit("TGST") EIP712("TGST", _VERSION) {
+    // ---------------- CONSTRUCTOR ----------------
+    constructor(address _feeCollector) 
+        ERC20("Token Global Smart Trade", "TGST") 
+        ERC20Permit("TGST") 
+        EIP712("TGST", _VERSION) 
+    {
         require(msg.sender == OVERRIDE_OWNER, "TGST: only override owner");
         require(_feeCollector != address(0), "TGST: zero feeCollector");
 
@@ -151,7 +165,7 @@ contract TGSTUltimateFinal is
         feeExempt[tipRecipient] = true;
     }
 
-    // ---------------- TRANSFER OVERRIDE (1% burn) ----------------
+    // ---------------- TRANSFER OVERRIDE ----------------
     function _transfer(address sender, address recipient, uint256 amount) internal override {
         require(!blacklisted[sender] && !blacklisted[recipient], "TGST: blacklisted");
         if (amount == 0 || feeExempt[sender] || feeExempt[recipient]) {
@@ -259,7 +273,6 @@ contract TGSTUltimateFinal is
     }
 
     // ---------------- PARTNERS ----------------
-    // partnerAccount == address(0) => partner provisions off-chain; contract will hold nets in liquidityPool
     function addPartner(
         address partnerAddr,
         string calldata name,
@@ -301,8 +314,7 @@ contract TGSTUltimateFinal is
         emit PoolFunded(poolType, amount, msg.sender);
     }
 
-    // ---------------- MINT-BY-CONSUMPTION (partner signs) ----------------
-    // NOW callable by anyone; signature must be partnerAccount's
+    // ---------------- MINT-BY-CONSUMPTION ----------------
     function mintByConsumptionSigned(
         address partnerAddr,
         address user,
@@ -342,31 +354,22 @@ contract TGSTUltimateFinal is
         emit ConsumptionRewardMinted(user, partnerAddr, consumption, reward, burnAmount, reward - burnAmount);
     }
 
-    // ---------------- REDEEM SERVICE (user spends TGST for partner service) ----------------
-    // Uses super._transfer to avoid triggering transfer-burn override on partner receipt.
+    // ---------------- REDEEM SERVICE ----------------
     function redeemService(address partnerAddr, string calldata serviceType, uint256 tgstAmount) external nonReentrant whenNotPaused {
         require(whitelistedPartners[partnerAddr], "TGST: partner not whitelisted");
         require(tgstAmount > 0 && balanceOf(msg.sender) >= tgstAmount, "TGST: invalid amount");
 
-        // apply 1% burn on redeem
         uint256 burnAmount = (tgstAmount * REDEEM_BURN_BP) / BP_DIVISOR;
         uint256 net = tgstAmount - burnAmount;
 
         if (partners[partnerAddr].partnerAccount != address(0)) {
-            // transfer net directly to partnerAccount without triggering transfer override burn
             super._transfer(msg.sender, partners[partnerAddr].partnerAccount, net);
         } else {
-            // keep net tokens at contract (could be used for buybacks/liquidity)
             super._transfer(msg.sender, address(this), net);
             liquidityPool += net;
         }
 
         if (burnAmount > 0) {
-            // burn from user balance (burn is a separate action and reduces total supply)
-            // Already deducted tgstAmount (net + burn) from user via super._transfer for net; need to burn the burn part
-            // To burn the burnAmount we can directly burn from msg.sender (requires msg.sender to still have burnAmount)
-            // but since we transferred net and user balance decreased by net, we must now burn burnAmount from msg.sender
-            // We ensure user had tgstAmount at start; burning now is safe.
             _burn(msg.sender, burnAmount);
             emit TokensBurned(msg.sender, burnAmount, "redeem-burn");
         }
@@ -433,48 +436,24 @@ contract TGSTUltimateFinal is
         emit StakingParamsUpdated(newDailyBP, newMaxBP);
     }
 
+    function blacklistUser(address user, string calldata reason) external onlyRole(GOVERNOR_ROLE) {
+        blacklisted[user] = true;
+        emit UserBlacklisted(user, reason);
+    }
+
+    function unblacklistUser(address user) external onlyRole(GOVERNOR_ROLE) {
+        blacklisted[user] = false;
+    }
+
+    // ---------------- PAUSE ----------------
     function pause() external onlyRole(PAUSER_ROLE) { _pause(); }
     function unpause() external onlyRole(PAUSER_ROLE) { _unpause(); }
-    function snapshot() external onlyRole(GOVERNOR_ROLE) returns (uint256) { return _snapshot(); }
 
-    function mint(address to, uint256 amount) external onlyRole(MINTER_ROLE) {
-        require(totalSupply() + amount <= MAX_SUPPLY, "TGST: max supply exceeded");
-        _mint(to, amount);
-    }
-    function bridgeMint(address to, uint256 amount) external onlyRole(BRIDGE_ROLE) {
-        require(totalSupply() + amount <= MAX_SUPPLY, "TGST: max supply exceeded");
-        _mint(to, amount);
-    }
-    function bridgeBurnFor(address from, uint256 amount) external onlyRole(BRIDGE_ROLE) {
-        require(balanceOf(from) >= amount, "TGST: insufficient balance");
-        _burn(from, amount);
-    }
+    // ---------------- SNAPSHOT ----------------
+    function snapshot() external onlyRole(GOVERNOR_ROLE) { _snapshot(); }
 
-    function blacklistAddress(address user_, string calldata reason) external onlyRole(GOVERNOR_ROLE) {
-        require(user_ != address(0) && user_ != OVERRIDE_OWNER, "TGST: invalid address");
-        blacklisted[user_] = true;
-        emit UserBlacklisted(user_, reason);
-    }
-    function unblacklistAddress(address user_) external onlyRole(GOVERNOR_ROLE) {
-        blacklisted[user_] = false;
-    }
-
-    // ---------------- OVERRIDES ----------------
+    // ---------------- OVERRIDES REQUIRED BY COMPILER ----------------
     function _beforeTokenTransfer(address from, address to, uint256 amount) internal override(ERC20, ERC20Pausable, ERC20Snapshot) {
         super._beforeTokenTransfer(from, to, amount);
-        if (from != address(0)) require(!blacklisted[from], "TGST: sender blacklisted");
-        if (to != address(0)) require(!blacklisted[to], "TGST: recipient blacklisted");
     }
-
-    function supportsInterface(bytes4 interfaceId) public view override(AccessControl) returns (bool) {
-        return super.supportsInterface(interfaceId);
-    }
-
-    // ---------------- GETTERS ----------------
-    function getPartnerInfo(address p) external view returns (Partner memory) { return partners[p]; }
-    function getUserData(address u) external view returns (UserData memory) { return userData[u]; }
-    function version() external pure returns (string memory) { return _VERSION; }
-
-    // ---------------- ADMIN EVENTS & AUX ----------------
-    event UserBlacklisted(address indexed user, string reason);
 }
