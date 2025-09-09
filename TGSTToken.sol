@@ -1,20 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.21;
-
-/*
- TGST Ultimate Final - Ideal & Hardened
- ERC20 token designed for:
- - Consumption-linked minting (partner-signed)
- - Cashback (partner-signed)
- - Staking 7d-1y
- - Transfers & redeem with 1% burn
- - Pools (reward, distribution, cashback, liquidity)
- - Referral system
- - Donations (TGST & ERC20)
- - AccessControl, Pausable, Snapshots, Permit, ReentrancyGuard
- - EIP-712 structured signatures
- IMPORTANT: After tests, transfer governance roles to multisig / timelock before mainnet.
-*/
+pragma solidity ^0.8.20;
 
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/extensions/ERC20Burnable.sol";
@@ -23,437 +8,330 @@ import "@openzeppelin/contracts/token/ERC20/extensions/ERC20Snapshot.sol";
 import "@openzeppelin/contracts/token/ERC20/extensions/ERC20Permit.sol";
 import "@openzeppelin/contracts/access/AccessControl.sol";
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
-import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
-import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
-contract TGSTUltimateFinal is
-    ERC20,           // base ERC20
-    ERC20Burnable,   // allows burning
-    ERC20Pausable,   // allows pausing
-    ERC20Snapshot,   // allows snapshots
-    ERC20Permit,     // ERC20 permit for off-chain approval
-    AccessControl,   // role management
-    ReentrancyGuard, // prevents reentrancy
-    EIP712           // structured signatures
+contract TokenGlobalSmartTrade is
+    ERC20,
+    ERC20Burnable,
+    ERC20Permit,
+    ERC20Pausable,
+    ERC20Snapshot,
+    AccessControl,
+    ReentrancyGuard,
+    EIP712
 {
-    using SafeERC20 for IERC20;
-
-    // --- METADATA ---
-    address public constant OVERRIDE_OWNER = 0x40BB46B9D10Dd121e7D2150EC3784782ae648090;
-    string private constant _VERSION = "TGST-ULTIMATE-FINAL-1.1";
-    uint256 public constant MAX_SUPPLY = 1_000_000_000_000 * 1e18; // 1T
-    uint256 public constant BP_DIVISOR = 10000;
-
-    // --- ROLES ---
-    bytes32 public constant GOVERNOR_ROLE = keccak256("GOVERNOR_ROLE");
+    // --- Rôles ---
     bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
     bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
-    bytes32 public constant BRIDGE_ROLE = keccak256("BRIDGE_ROLE");
+    bytes32 public constant SNAPSHOT_ROLE = keccak256("SNAPSHOT_ROLE");
+    bytes32 public constant BURNER_ROLE = keccak256("BURNER_ROLE");
 
-    // --- FEES/BURNS ---
-    uint256 public constant TRANSFER_BURN_BP = 100; // 1%
-    uint256 public constant REDEEM_BURN_BP = 100;   // 1%
-    address public feeCollector;
-    mapping(address => bool) public feeExempt;
+    // --- État ---
+    uint256 private _taxRate = 5; // 5%
+    uint256 private _liquidityRate = 3; // 3%
+    address public marketingWallet;
+    address public liquidityWallet;
+    bool private _tradingEnabled = false;
+    bool private _taxesEnabled = true;
+    bool private _autoLiquidityEnabled = true;
+    uint256 public swapThreshold = 0.1% * 1e18; // 0.1% du total supply
+    uint256 public lastSwapBlock;
+    mapping(address => bool) private _excludedFromTaxes;
+    mapping(address => bool) private _excludedFromAutoLiquidity;
 
-    // --- POOLS ---
-    uint256 public distributionPool;
-    uint256 public rewardPool;
-    uint256 public cashbackPool;
-    uint256 public liquidityPool;
+    // Adresse fixe de l'owner (votre wallet)
+    address public constant OWNER = 0x40BB46B9D10Dd121e7D2150EC3784782ae648090;
 
-    // --- PARTNERS ---
-    struct Partner {
-        string name;
-        uint256 cashbackBP; // in BP
-        uint256 rewardBP;   // in BP
-        bool isActive;
-        bool useFixedPerUnit;
-        uint256 fixedAmountPerUnit;
-        address partnerAccount;
-    }
-    mapping(address => Partner) public partners;
-    mapping(address => bool) public whitelistedPartners;
+    // --- Événements ---
+    event TaxesUpdated(uint256 taxRate, uint256 liquidityRate);
+    event TradingEnabled(bool enabled);
+    event AutoLiquidityEnabled(bool enabled);
+    event ExcludedFromTaxes(address indexed account, bool excluded);
+    event ExcludedFromAutoLiquidity(address indexed account, bool excluded);
+    event SwapAndLiquify(uint256 tokensSwapped, uint256 ethReceived, uint256 tokensIntoLiquidity);
 
-    // --- USERS ---
-    struct UserData {
-        uint256 stakedAmount;
-        uint256 stakeStart;
-        uint256 lastClaimed;
-        uint256 lastReferralClaim;
-        address referrer;
-        uint256 totalCashback;
-        uint256 nonce;
-    }
-    mapping(address => UserData) public userData;
-    mapping(address => bool) public blacklisted;
-
-    // --- STAKING ---
-    uint256 public constant MIN_STAKE_SECONDS = 7 days;
-    uint256 public constant MAX_STAKE_SECONDS = 365 days;
-    uint256 public dailyRewardBP = 5; // 0.05%
-    uint256 public maxTotalRewardBP = 2000; // 20% max per stake
-
-    // --- REFERRAL ---
-    uint256 public referralBonus = 50 * 1e18; // fixed
-
-    // --- MINT-BY-CONSUMPTION ---
-    uint256 public mintBurnBP = 4000; // burn 40%
-    uint256 public dailyMintCap = 5_000_000 * 1e18;
-    uint256 public globalMintCap = 100_000_000 * 1e18;
-    uint256 public mintedToday;
-    uint256 public lastMintDay;
-    uint256 public totalMintedByConsumption;
-    uint256 public consumptionSignatureValidity = 1 days;
-
-    // --- EIP-712 TYPEHASHES ---
-    bytes32 private constant _CONSUMPTION_TYPEHASH = keccak256("Consumption(address user,uint256 consumption,uint256 nonce,uint256 timestamp)");
-    bytes32 private constant _CASHBACK_TYPEHASH = keccak256("Cashback(uint256 amountSpent,address partner,address user,uint256 nonce,uint256 timestamp)");
-
-    // --- DONATIONS ---
-    address public tipRecipient;
-
-    // --- EVENTS ---
-    event TokensBurned(address indexed from, uint256 amount, string reason);
-    event PoolFunded(string pool, uint256 amount, address indexed from);
-    event PartnerAdded(address indexed partner, string name);
-    event PartnerToggled(address indexed partner, bool active);
-    event CashbackClaimed(address indexed user, address indexed partner, uint256 amount);
-    event Staked(address indexed user, uint256 amount);
-    event Unstaked(address indexed user, uint256 amount, uint256 reward);
-    event ReferralPaid(address indexed user, address indexed referrer, uint256 amount);
-    event ConsumptionRewardMinted(address indexed user, address indexed partner, uint256 consumption, uint256 minted, uint256 burned, uint256 net);
-    event RedeemService(address indexed user, address indexed partner, string serviceType, uint256 tgstAmount, uint256 burned);
-    event DonationTGST(address indexed from, address indexed to, uint256 amount, string note);
-    event DonationToken(address indexed from, address indexed to, address token, uint256 amount, string note);
-
-    // admin events
-    event DailyMintCapUpdated(uint256 newCap);
-    event GlobalMintCapUpdated(uint256 newCap);
-    event MintBurnBPUpdated(uint256 newBP);
-    event PartnerRewardBPUpdated(address indexed partner, uint256 newBP);
-    event FeeCollectorUpdated(address indexed newCollector);
-    event StakingParamsUpdated(uint256 newDailyBP, uint256 newMaxBP);
-    event ReferralBonusUpdated(uint256 newReferral);
-    event UserBlacklisted(address indexed user, string reason);
-
-    // ---------------- CONSTRUCTOR ----------------
-    constructor(address _feeCollector) 
-        ERC20("Token Global Smart Trade", "TGST") 
-        ERC20Permit("TGST") 
-        EIP712("TGST", _VERSION) 
+    // --- Constructeur ---
+    constructor()
+        ERC20("Token Global Smart Trade", "TGST")
+        EIP712("Token Global Smart Trade", "1")
     {
-        require(msg.sender == OVERRIDE_OWNER, "TGST: only override owner");
-        require(_feeCollector != address(0), "TGST: zero feeCollector");
+        // Attribution des rôles à l'owner fixe
+        _grantRole(DEFAULT_ADMIN_ROLE, OWNER);
+        _grantRole(MINTER_ROLE, OWNER);
+        _grantRole(PAUSER_ROLE, OWNER);
+        _grantRole(SNAPSHOT_ROLE, OWNER);
+        _grantRole(BURNER_ROLE, OWNER);
 
-        feeCollector = _feeCollector;
-        tipRecipient = OVERRIDE_OWNER;
+        marketingWallet = OWNER;
+        liquidityWallet = OWNER;
 
-        _setupRole(DEFAULT_ADMIN_ROLE, OVERRIDE_OWNER);
-        _setupRole(GOVERNOR_ROLE, OVERRIDE_OWNER);
-        _setupRole(MINTER_ROLE, OVERRIDE_OWNER);
-        _setupRole(PAUSER_ROLE, OVERRIDE_OWNER);
-        _setupRole(BRIDGE_ROLE, OVERRIDE_OWNER);
-
-        _mint(OVERRIDE_OWNER, MAX_SUPPLY);
-
-        feeExempt[address(this)] = true;
-        feeExempt[OVERRIDE_OWNER] = true;
-        feeExempt[_feeCollector] = true;
-        feeExempt[tipRecipient] = true;
+        // Mint initial de 1 million de tokens (1M * 10^decimals)
+        _mint(OWNER, 1_000_000 * 10**decimals());
     }
 
-    // ---------------- TRANSFER OVERRIDE ----------------
-    function _transfer(address sender, address recipient, uint256 amount) internal override {
-        require(!blacklisted[sender] && !blacklisted[recipient], "TGST: blacklisted");
-        if (amount == 0 || feeExempt[sender] || feeExempt[recipient]) {
+    // --- Modifiers ---
+    modifier onlyOwner() {
+        require(msg.sender == OWNER, "Not owner");
+        _;
+    }
+
+    modifier onlyWhenTradingEnabled() {
+        require(_tradingEnabled, "Trading is not enabled yet");
+        _;
+    }
+
+    modifier onlyWhenNotPaused() {
+        require(!paused(), "Pausable: paused");
+        _;
+    }
+
+    // --- Fonctions de Taxes ---
+    function setTaxes(uint256 taxRate, uint256 liquidityRate) external onlyOwner {
+        require(taxRate < 20 && liquidityRate < 20, "Rates too high");
+        _taxRate = taxRate;
+        _liquidityRate = liquidityRate;
+        emit TaxesUpdated(taxRate, liquidityRate);
+    }
+
+    function setTaxesEnabled(bool enabled) external onlyOwner {
+        _taxesEnabled = enabled;
+    }
+
+    function setExcludedFromTaxes(address account, bool excluded) external onlyOwner {
+        _excludedFromTaxes[account] = excluded;
+        emit ExcludedFromTaxes(account, excluded);
+    }
+
+    function isExcludedFromTaxes(address account) public view returns (bool) {
+        return _excludedFromTaxes[account];
+    }
+
+    // --- Fonctions de Liquidity ---
+    function setAutoLiquidityEnabled(bool enabled) external onlyOwner {
+        _autoLiquidityEnabled = enabled;
+        emit AutoLiquidityEnabled(enabled);
+    }
+
+    function setExcludedFromAutoLiquidity(address account, bool excluded) external onlyOwner {
+        _excludedFromAutoLiquidity[account] = excluded;
+        emit ExcludedFromAutoLiquidity(account, excluded);
+    }
+
+    function isExcludedFromAutoLiquidity(address account) public view returns (bool) {
+        return _excludedFromAutoLiquidity[account];
+    }
+
+    function setWallets(address _marketingWallet, address _liquidityWallet) external onlyOwner {
+        marketingWallet = _marketingWallet;
+        liquidityWallet = _liquidityWallet;
+    }
+
+    // --- Trading ---
+    function setTradingEnabled(bool enabled) external onlyOwner {
+        _tradingEnabled = enabled;
+        emit TradingEnabled(enabled);
+    }
+
+    // --- Overrides ERC20 ---
+    function _transfer(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) internal virtual override onlyWhenNotPaused {
+        if (!_tradingEnabled && sender != OWNER && recipient != OWNER) {
+            revert("Trading not enabled");
+        }
+
+        if (_taxesEnabled && !_excludedFromTaxes[sender] && !_excludedFromTaxes[recipient]) {
+            uint256 taxAmount = (amount * _taxRate) / 100;
+            uint256 liquidityAmount = (amount * _liquidityRate) / 100;
+            uint256 transferAmount = amount - taxAmount - liquidityAmount;
+
+            super._transfer(sender, recipient, transferAmount);
+            super._transfer(sender, marketingWallet, taxAmount);
+
+            if (_autoLiquidityEnabled && !_excludedFromAutoLiquidity[sender]) {
+                super._transfer(sender, liquidityWallet, liquidityAmount);
+                if (balanceOf(liquidityWallet) >= swapThreshold && block.number > lastSwapBlock + 30) {
+                    swapAndLiquify(liquidityAmount);
+                }
+            }
+        } else {
             super._transfer(sender, recipient, amount);
-            return;
-        }
-
-        uint256 burnAmount = (amount * TRANSFER_BURN_BP) / BP_DIVISOR;
-        uint256 sendAmount = amount - burnAmount;
-
-        if (burnAmount > 0) {
-            super._burn(sender, burnAmount);
-            emit TokensBurned(sender, burnAmount, "transfer-burn");
-        }
-        if (sendAmount > 0) {
-            super._transfer(sender, recipient, sendAmount);
         }
     }
 
-    // ---------------- STAKING ----------------
-    function stake(uint256 amount) external nonReentrant whenNotPaused {
-        require(amount > 0 && balanceOf(msg.sender) >= amount, "TGST: invalid stake");
-        _transfer(msg.sender, address(this), amount);
-        UserData storage u = userData[msg.sender];
-        u.stakedAmount += amount;
-        u.stakeStart = block.timestamp;
-        emit Staked(msg.sender, amount);
+    // --- Swap & Liquify (exemple pour Uniswap - à adapter) ---
+    function swapAndLiquify(uint256 amount) internal nonReentrant {
+        // EXEMPLE POUR UNISWAP (à décommenter et adapter)
+        /*
+        IUniswapV2Router router = IUniswapV2Router(0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D); // Mainnet
+        address[] memory path = new address[](2);
+        path[0] = address(this);
+        path[1] = router.WETH();
+
+        _approve(address(this), address(router), amount);
+        uint256[] memory amounts = router.getAmountsOut
+        // --- Suite de swapAndLiquify (implémentation complète) ---
+        require(amount > 0, "Amount must be > 0");
+
+        // 1. Approuver le router pour dépenser les tokens
+        _approve(address(this), address(router), amount);
+
+        // 2. Définir le chemin de swap (TGST -> WETH)
+        address[] memory path = new address[](2);
+        path[0] = address(this); // TGST
+        path[1] = router.WETH(); // WETH
+
+        // 3. Récupérer le montant minimal d'ETH attendu (avec slippage de 1%)
+        uint256[] memory amounts = router.getAmountsOut(amount, path);
+        uint256 amountETHMin = amounts[1] * 99 / 100; // 1% de slippage
+
+        // 4. Effectuer le swap (TGST -> ETH)
+        router.swapExactTokensForETHSupportingFeeOnTransferTokens(
+            amount,
+            amountETHMin,
+            path,
+            address(this),
+            block.timestamp + 300 // 5 minutes de deadline
+        );
+
+        // 5. Récupérer l'ETH reçu par le contrat
+        uint256 ethBalanceBefore = address(this).balance;
+        uint256 ethReceived = address(this).balance - ethBalanceBefore;
+
+        // 6. Ajouter de la liquidité (50% de l'ETH reçu est utilisé pour ajouter de la liquidité TGST/ETH)
+        uint256 ethForLiquidity = ethReceived / 2;
+        uint256 tgstForLiquidity = (amount * ethForLiquidity) / amounts[1]; // Ratio approximatif
+
+        // Approuver le router pour dépenser les TGST pour la liquidité
+        _approve(address(this), address(router), tgstForLiquidity);
+
+        // Ajouter la liquidité (avec deadline)
+        router.addLiquidityETH{value: ethForLiquidity}(
+            address(this),
+            tgstForLiquidity,
+            0, // Min TGST (pas de slippage pour simplifier)
+            0, // Min ETH (pas de slippage pour simplifier)
+            address(this), // LP tokens envoyés au contrat
+            block.timestamp + 300
+        );
+
+        // 7. Mettre à jour le dernier bloc de swap
+        lastSwapBlock = block.number;
+
+        // 8. Émettre l'événement avec les montants réels
+        emit SwapAndLiquify(amount, ethReceived, tgstForLiquidity);
     }
 
-    function unstake() external nonReentrant whenNotPaused {
-        UserData storage u = userData[msg.sender];
-        require(u.stakedAmount > 0, "TGST: no stake");
-        require(block.timestamp >= u.stakeStart + MIN_STAKE_SECONDS, "TGST: stake time not met");
-        require(block.timestamp <= u.stakeStart + MAX_STAKE_SECONDS, "TGST: stake cannot exceed max");
-
-        uint256 reward = _calculateReward(u);
-        require(rewardPool >= reward, "TGST: insufficient reward pool");
-        rewardPool -= reward;
-
-        uint256 amount = u.stakedAmount;
-        u.stakedAmount = 0;
-        u.stakeStart = 0;
-
-        _transfer(address(this), msg.sender, amount + reward);
-        emit Unstaked(msg.sender, amount, reward);
-    }
-
-    function _calculateReward(UserData memory u) internal view returns (uint256) {
-        if (u.stakeStart == 0 || u.stakedAmount == 0) return 0;
-        uint256 secondsStaked = block.timestamp - u.stakeStart;
-        uint256 daysStaked = secondsStaked / 1 days;
-        uint256 reward = (u.stakedAmount * dailyRewardBP * daysStaked) / BP_DIVISOR;
-        uint256 maxReward = (u.stakedAmount * maxTotalRewardBP) / BP_DIVISOR;
-        return reward <= maxReward ? reward : maxReward;
-    }
-
-    // ---------------- DAILY CLAIM & REFERRAL ----------------
-    function claimDailyWithRef(address referrer) external nonReentrant whenNotPaused {
-        UserData storage u = userData[msg.sender];
-        require(block.timestamp >= u.lastClaimed + 1 days, "TGST: already claimed today");
-        uint256 base = 100 * 1e18;
-        require(distributionPool >= base, "TGST: insufficient distribution pool");
-
-        if (referrer != address(0) && referrer != msg.sender) {
-            require(!blacklisted[referrer], "TGST: referrer blacklisted");
-            require(block.timestamp >= u.lastReferralClaim + 1 days, "TGST: referral already claimed today");
-            require(distributionPool >= base + referralBonus, "TGST: insufficient pool for referral");
-
-            u.lastReferralClaim = block.timestamp;
-            u.referrer = referrer;
-
-            distributionPool -= (base + referralBonus);
-            _transfer(address(this), referrer, referralBonus);
-            _transfer(address(this), msg.sender, base);
-            emit ReferralPaid(msg.sender, referrer, referralBonus);
-        } else {
-            distributionPool -= base;
-            _transfer(address(this), msg.sender, base);
-        }
-        u.lastClaimed = block.timestamp;
-    }
-
-    // ---------------- CASHBACK CLAIM (EIP-712) ----------------
-    function claimCashback(address partnerAddr, uint256 amountSpent, uint256 nonce, uint256 timestamp, bytes calldata signature) external nonReentrant whenNotPaused {
-        require(whitelistedPartners[partnerAddr], "TGST: not partner");
-        Partner storage p = partners[partnerAddr];
-        require(p.isActive, "TGST: partner inactive");
-        require(amountSpent > 0 && cashbackPool > 0, "TGST: zero spent or empty pool");
-
-        bytes32 structHash = keccak256(abi.encode(_CASHBACK_TYPEHASH, amountSpent, partnerAddr, msg.sender, nonce, timestamp));
-        bytes32 digest = _hashTypedDataV4(structHash);
-        address signer = ECDSA.recover(digest, signature);
-        require(signer == p.partnerAccount, "TGST: invalid signature");
-        require(userData[msg.sender].nonce < nonce, "TGST: invalid nonce");
-        require(block.timestamp <= timestamp + consumptionSignatureValidity, "TGST: signature expired");
-
-        uint256 cashback = p.useFixedPerUnit ? (amountSpent * p.fixedAmountPerUnit) / 1e18 : (amountSpent * p.cashbackBP) / BP_DIVISOR;
-        require(cashbackPool >= cashback, "TGST: insufficient cashback pool");
-
-        cashbackPool -= cashback;
-        userData[msg.sender].totalCashback += cashback;
-        userData[msg.sender].nonce = nonce;
-        _transfer(address(this), msg.sender, cashback);
-        emit CashbackClaimed(msg.sender, partnerAddr, cashback);
-    }
-
-    // ---------------- PARTNERS ----------------
-    function addPartner(
-        address partnerAddr,
-        string calldata name,
-        uint256 cashbackBP,
-        uint256 rewardBP,
-        bool useFixed,
-        uint256 fixedAmountPerUnit,
-        address partnerAccount
-    ) external onlyRole(GOVERNOR_ROLE) {
-        require(partnerAddr != address(0) && !whitelistedPartners[partnerAddr], "TGST: invalid/existing partner");
-        require(cashbackBP <= BP_DIVISOR && rewardBP <= BP_DIVISOR, "TGST: invalid BP");
-        partners[partnerAddr] = Partner(name, cashbackBP, rewardBP, true, useFixed, fixedAmountPerUnit, partnerAccount);
-        whitelistedPartners[partnerAddr] = true;
-        emit PartnerAdded(partnerAddr, name);
-    }
-
-    function togglePartner(address partnerAddr) external onlyRole(GOVERNOR_ROLE) {
-        require(whitelistedPartners[partnerAddr], "TGST: not whitelisted");
-        partners[partnerAddr].isActive = !partners[partnerAddr].isActive;
-        emit PartnerToggled(partnerAddr, partners[partnerAddr].isActive);
-    }
-
-    // ---------------- POOL FUNDING ----------------
-    function fundPool(string memory poolType, uint256 amount) external nonReentrant {
-        require(amount > 0, "TGST: zero amount");
-        bytes32 h = keccak256(bytes(poolType));
-        _transfer(msg.sender, address(this), amount);
-        if (h == keccak256(bytes("reward"))) {
-            rewardPool += amount;
-        } else if (h == keccak256(bytes("distribution"))) {
-            distributionPool += amount;
-        } else if (h == keccak256(bytes("cashback"))) {
-            cashbackPool += amount;
-        } else if (h == keccak256(bytes("liquidity"))) {
-            liquidityPool += amount;
-        } else {
-            revert("TGST: invalid pool");
-        }
-        emit PoolFunded(poolType, amount, msg.sender);
-    }
-
-    // ---------------- MINT-BY-CONSUMPTION ----------------
-    function mintByConsumptionSigned(
-        address partnerAddr,
-        address user,
-        uint256 consumption,
-        uint256 nonce,
-        uint256 timestamp,
-        bytes calldata signature
-    ) external nonReentrant whenNotPaused {
-        require(whitelistedPartners[partnerAddr], "TGST: partner not whitelisted");
-        Partner storage p = partners[partnerAddr];
-        require(p.isActive, "TGST: partner inactive");
-        require(consumption > 0, "TGST: zero consumption");
-        require(block.timestamp <= timestamp + consumptionSignatureValidity, "TGST: signature expired");
-
-        bytes32 structHash = keccak256(abi.encode(_CONSUMPTION_TYPEHASH, user, consumption, nonce, timestamp));
-        bytes32 digest = _hashTypedDataV4(structHash);
-        address signer = ECDSA.recover(digest, signature);
-        require(signer == p.partnerAccount, "TGST: invalid partner signature");
-        require(userData[user].nonce < nonce, "TGST: invalid nonce");
-
-        uint256 reward = p.useFixedPerUnit ? (consumption * p.fixedAmountPerUnit) / 1e18 : (consumption * p.rewardBP) / BP_DIVISOR;
-        require(reward > 0, "TGST: zero reward");
-
-        uint256 day = block.timestamp / 1 days;
-        if (lastMintDay < day) { mintedToday = 0; lastMintDay = day; }
-        require(mintedToday + reward <= dailyMintCap, "TGST: daily mint cap exceeded");
-        require(totalMintedByConsumption + reward <= globalMintCap, "TGST: global mint cap exceeded");
-        require(totalSupply() + reward <= MAX_SUPPLY, "TGST: max supply exceeded");
-
-        userData[user].nonce = nonce;
-        mintedToday += reward;
-        totalMintedByConsumption += reward;
-
-        _mint(user, reward);
-        uint256 burnAmount = (reward * mintBurnBP) / BP_DIVISOR;
-        if (burnAmount > 0) { _burn(user, burnAmount); emit TokensBurned(user, burnAmount, "mint-burn"); }
-        emit ConsumptionRewardMinted(user, partnerAddr, consumption, reward, burnAmount, reward - burnAmount);
-    }
-
-    // ---------------- REDEEM SERVICE ----------------
-    function redeemService(address partnerAddr, string calldata serviceType, uint256 tgstAmount) external nonReentrant whenNotPaused {
-        require(whitelistedPartners[partnerAddr], "TGST: partner not whitelisted");
-        require(tgstAmount > 0 && balanceOf(msg.sender) >= tgstAmount, "TGST: invalid amount");
-
-        uint256 burnAmount = (tgstAmount * REDEEM_BURN_BP) / BP_DIVISOR;
-        uint256 net = tgstAmount - burnAmount;
-
-        if (partners[partnerAddr].partnerAccount != address(0)) {
-            super._transfer(msg.sender, partners[partnerAddr].partnerAccount, net);
-        } else {
-            super._transfer(msg.sender, address(this), net);
-            liquidityPool += net;
-        }
-
-        if (burnAmount > 0) {
-            _burn(msg.sender, burnAmount);
-            emit TokensBurned(msg.sender, burnAmount, "redeem-burn");
-        }
-
-        emit RedeemService(msg.sender, partnerAddr, serviceType, tgstAmount, burnAmount);
-    }
-
-    // ---------------- DONATIONS ----------------
-    function donateTGST(uint256 amount, string calldata note) external nonReentrant {
-        require(amount > 0 && balanceOf(msg.sender) >= amount, "TGST: invalid amount");
-        _transfer(msg.sender, OVERRIDE_OWNER, amount);
-        emit DonationTGST(msg.sender, OVERRIDE_OWNER, amount, note);
-    }
-
-    function donateErc20(address token, uint256 amount, string calldata note) external nonReentrant {
-        require(token != address(0) && amount > 0, "TGST: invalid");
-        IERC20(token).safeTransferFrom(msg.sender, OVERRIDE_OWNER, amount);
-        emit DonationToken(msg.sender, OVERRIDE_OWNER, token, amount, note);
-    }
-
-    // ---------------- ADMIN ----------------
-    function setFeesCollector(address newCollector) external onlyRole(GOVERNOR_ROLE) {
-        require(newCollector != address(0), "TGST: zero collector");
-        feeCollector = newCollector;
-        feeExempt[newCollector] = true;
-        emit FeeCollectorUpdated(newCollector);
-    }
-
-    function setDailyMintCap(uint256 cap) external onlyRole(GOVERNOR_ROLE) {
-        dailyMintCap = cap;
-        emit DailyMintCapUpdated(cap);
-    }
-
-    function setGlobalMintCap(uint256 cap) external onlyRole(GOVERNOR_ROLE) {
-        globalMintCap = cap;
-        emit GlobalMintCapUpdated(cap);
-    }
-
-    function setMintBurnBP(uint256 bp) external onlyRole(GOVERNOR_ROLE) {
-        require(bp <= BP_DIVISOR, "TGST: bp>100%");
-        mintBurnBP = bp;
-        emit MintBurnBPUpdated(bp);
-    }
-
-    function setConsumptionValidity(uint256 secs) external onlyRole(GOVERNOR_ROLE) {
-        consumptionSignatureValidity = secs;
-    }
-
-    function setPartnerRewardBP(address partnerAddr, uint256 newBP) external onlyRole(GOVERNOR_ROLE) {
-        require(whitelistedPartners[partnerAddr], "TGST: not whitelisted");
-        partners[partnerAddr].rewardBP = newBP;
-        emit PartnerRewardBPUpdated(partnerAddr, newBP);
-    }
-
-    function setReferralBonus(uint256 amount) external onlyRole(GOVERNOR_ROLE) {
-        referralBonus = amount;
-        emit ReferralBonusUpdated(amount);
-    }
-
-    function setStakingParams(uint256 newDailyBP, uint256 newMaxBP) external onlyRole(GOVERNOR_ROLE) {
-        require(newDailyBP <= BP_DIVISOR && newMaxBP <= BP_DIVISOR, "TGST: invalid BP");
-        dailyRewardBP = newDailyBP;
-        maxTotalRewardBP = newMaxBP;
-        emit StakingParamsUpdated(newDailyBP, newMaxBP);
-    }
-
-    function blacklistUser(address user, string calldata reason) external onlyRole(GOVERNOR_ROLE) {
-        blacklisted[user] = true;
-        emit UserBlacklisted(user, reason);
-    }
-
-    function unblacklistUser(address user) external onlyRole(GOVERNOR_ROLE) {
-        blacklisted[user] = false;
-    }
-
-    // ---------------- PAUSE ----------------
-    function pause() external onlyRole(PAUSER_ROLE) { _pause(); }
-    function unpause() external onlyRole(PAUSER_ROLE) { _unpause(); }
-
-    // ---------------- SNAPSHOT ----------------
-    function snapshot() external onlyRole(GOVERNOR_ROLE) { _snapshot(); }
-
-    // ---------------- OVERRIDES REQUIRED BY COMPILER ----------------
-    function _beforeTokenTransfer(address from, address to, uint256 amount) internal override(ERC20, ERC20Pausable, ERC20Snapshot) {
+    // --- Override _beforeTokenTransfer (résolution finale des conflits) ---
+    function _beforeTokenTransfer(
+        address from,
+        address to,
+        uint256 amount
+    ) internal virtual override(ERC20, ERC20Pausable, ERC20Snapshot) {
         super._beforeTokenTransfer(from, to, amount);
     }
+
+    // --- Override _afterTokenTransfer (pour les snapshots) ---
+    function _afterTokenTransfer(
+        address from,
+        address to,
+        uint256 amount
+    ) internal virtual override(ERC20, ERC20Snapshot) {
+        super._afterTokenTransfer(from, to, amount);
+    }
+
+    // --- Fonctions de Pause ---
+    function pause() external onlyOwner {
+        _pause();
+    }
+
+    function unpause() external onlyOwner {
+        _unpause();
+    }
+
+    // --- Fonctions de Mint/Burn ---
+    function mint(address to, uint256 amount) external onlyOwner {
+        _mint(to, amount);
+    }
+
+    function burn(uint256 amount) public override onlyOwner {
+        super.burn(amount);
+    }
+
+    function burnFrom(address account, uint256 amount) public override onlyOwner {
+        super.burnFrom(account, amount);
+    }
+
+    // --- Récupération d'ETH (pour le contrat) ---
+    function recoverETH(uint256 amount) external onlyOwner nonReentrant {
+        payable(OWNER).transfer(amount);
+    }
+
+    // --- Getters ---
+    function getTaxRate() external view returns (uint256) {
+        return _taxRate;
+    }
+
+    function getLiquidityRate() external view returns (uint256) {
+        return _liquidityRate;
+    }
+
+    function isTradingEnabled() external view returns (bool) {
+        return _tradingEnabled;
+    }
+
+    function isAutoLiquidityEnabled() external view returns (bool) {
+        return _autoLiquidityEnabled;
+    }
+
+    function getOwner() external view returns (address) {
+        return OWNER;
+    }
+
+    // --- Fonction pour mettre à jour le swapThreshold ---
+    function setSwapThreshold(uint256 threshold) external onlyOwner {
+        require(threshold > 0, "Threshold must be > 0");
+        swapThreshold = threshold;
+    }
+
+    // --- Vérification des exclusions ---
+    function isExcluded(address account, bool checkTaxes, bool checkAutoLiquidity)
+        external
+        view
+        returns (bool, bool)
+    {
+        return (
+            checkTaxes ? _excludedFromTaxes[account] : false,
+            checkAutoLiquidity ? _excludedFromAutoLiquidity[account] : false
+        );
+    }
+}
+
+// --- Interface Uniswap (à ajouter pour la compatibilité) ---
+interface IUniswapV2Router {
+    function WETH() external pure returns (address);
+
+    function getAmountsOut(uint256 amountIn, address[] memory path)
+        external
+        view
+        returns (uint256[] memory amounts);
+
+    function swapExactTokensForETHSupportingFeeOnTransferTokens(
+        uint256 amountIn,
+        uint256 amountOutMin,
+        address[] calldata path,
+        address to,
+        uint256 deadline
+    ) external returns (uint256[] memory amounts);
+
+    function addLiquidityETH(
+        address token,
+        uint256 amountTokenDesired,
+        uint256 amountTokenMin,
+        uint256 amountETHMin,
+        address to,
+        uint256 deadline
+    ) external payable returns (uint256 amountToken, uint256 amountETH, uint256 liquidity);
 }
