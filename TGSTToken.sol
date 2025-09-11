@@ -56,65 +56,65 @@ contract TGSTUltimateV10 is
     using SafeERC20 for IERC20;
     using Math for uint256;
 
-    // --- Owner (temporary centralized control)
+    // --- Owner wallet
     address public immutable owner;
 
     // --- Supply params
     uint256 public immutable maxSupply;
-    uint256 public immutable initialDeployable; // 10% of maxSupply
-    uint256 public immutable botDistribution;   // 25% of initialDeployable
+    uint256 public immutable initialDeployable;
+    uint256 public immutable botDistribution;
 
     // --- Roles
     bytes32 public constant GOVERNOR_ROLE = keccak256("GOVERNOR_ROLE");
-    bytes32 public constant ORACLE_ROLE  = keccak256("ORACLE_ROLE");
+    bytes32 public constant ORACLE_ROLE = keccak256("ORACLE_ROLE");
 
-    // --- Pools (packed)
+    // --- Pools
     uint128 public rewardPool;
     uint128 public cashbackPool;
     uint128 public stabilizerPool;
 
     // --- Economics & price
-    uint256 public targetPrice = 1e14; // 1 TGST = 0.0001 USDT -> 1 USDT = 10,000 TGST
-    uint256 public baseBurnBP = 100;   // 1% base
-    uint256 public baseMintBP = 50;    // 0.5% base
-    uint256 public constant k = 1e13;  // coefficient for price adjustment
+    uint256 public targetPrice = 1e14; // 0.0001 USDT par TGST par défaut
+    uint256 public baseBurnBP = 100;   // 1%
+    uint256 public baseMintBP = 50;    // 0.5%
+    uint256 public constant k = 1e13;
 
-    // --- Oracle data (packed)
+    // --- Oracle data
     struct OracleData {
         uint128 totalVolume;
         uint128 totalStaked;
         uint128 totalPartnersMint;
-        uint40  timestamp;
+        uint40 timestamp;
     }
     OracleData public lastOracleData;
 
-    // --- Staking packed
+    // --- Staking data
     struct Stake {
         uint128 amount;
-        uint40  startTime;
-        uint40  unlockTime;
+        uint40 startTime;
+        uint40 unlockTime;
     }
     mapping(address => Stake) public stakes;
 
     uint256 public constant MIN_STAKE_DURATION = 7 days;
     uint256 public constant MAX_STAKE_DURATION = 30 days;
-    uint256 public constant MAX_REWARD_BP = 500; // 5%
+    uint256 public constant MAX_REWARD_BP = 500;
 
-    // --- Nonces for EIP-712
+    // --- Nonces pour EIP-712
     mapping(address => uint256) public nonces;
 
-    // --- partner verifier & optional modules
+    // --- Partner verifier & optional modules
     address public immutable partnerVerifier;
     IZKVerifier public zkVerifier;
     ILayerZeroEndpoint public lzEndpoint;
     uint16 public lzChainId;
 
-    // --- per-partner daily mint tracking
+    // --- Partner daily mint tracking
     mapping(address => uint256) public partnerDailyMint;
     mapping(address => uint256) public partnerLastDay;
     uint256 public dailyPartnerCap;
 
-    // --- oracle anomaly detection
+    // --- Oracle anomaly detection
     uint8 public consecutiveAnomalies;
     uint8 public constant ANOMALY_THRESHOLD = 2;
 
@@ -130,7 +130,6 @@ contract TGSTUltimateV10 is
     event EmergencyRescue(address indexed token, uint256 amount, address indexed recipient);
     event CentralControlRenounced(address indexed previousOwner);
 
-    // --- EIP-712 type
     bytes32 private constant _CONSUMPTION_TYPEHASH =
         keccak256("ConsumptionMint(address user,uint256 amount,uint256 nonce,uint256 expiry,address partner)");
 
@@ -144,32 +143,33 @@ contract TGSTUltimateV10 is
         require(maxSupply_ > 0, "TGST: zero max supply");
 
         owner = msg.sender;
+
         maxSupply = maxSupply_;
         partnerVerifier = partnerVerifier_;
 
+        // initial deployable = 10% du maxSupply
         initialDeployable = (maxSupply_ * 10) / 100;
+        // botDistribution = 25% de initialDeployable
         botDistribution = (initialDeployable * 25) / 100;
+        // daily partner cap = 10% de botDistribution
         dailyPartnerCap = (botDistribution * 10) / 100;
 
+        // Attribution des rôles
         _grantRole(DEFAULT_ADMIN_ROLE, owner);
         _grantRole(GOVERNOR_ROLE, owner);
         _grantRole(ORACLE_ROLE, owner);
 
+        // Mint initial
         uint256 ownerInitial = initialDeployable - botDistribution;
         _mint(owner, ownerInitial);
         _mint(address(this), botDistribution);
     }
 
-    // -------------------------
-    // Helper: today index
-    // -------------------------
+    // --- Fonctions principales ---
     function _today() internal view returns (uint256) {
         return block.timestamp / 1 days;
     }
 
-    // -------------------------
-    // Pools fund
-    // -------------------------
     function fundPools(uint256 rewardAmt, uint256 cashbackAmt, uint256 stabilizerAmt)
         external onlyRole(GOVERNOR_ROLE) nonReentrant
     {
@@ -182,12 +182,9 @@ contract TGSTUltimateV10 is
         cashbackPool += uint128(cashbackAmt);
         stabilizerPool += uint128(stabilizerAmt);
 
-        emit PoolsUpdated(rewardAmt, cashbackAmt, stabilizerAmt);
+        emit PoolsUpdated(rewardPool, cashbackPool, stabilizerPool);
     }
 
-    // -------------------------
-    // Mint on consumption (EIP-712: partner signs)
-    // -------------------------
     function mintOnConsumption(
         uint256 amount,
         uint256 nonce,
@@ -248,14 +245,7 @@ contract TGSTUltimateV10 is
         return (amountInUSDT * 1e18) / price;
     }
 
-    // -------------------------
-    // Transfer override: burn/mint dynamic
-    // -------------------------
-    function _transfer(
-        address from,
-        address to,
-        uint256 amount
-    ) internal virtual override whenNotPaused {
+    function _transfer(address from, address to, uint256 amount) internal override whenNotPaused {
         if (from == address(this) || to == address(this)) {
             super._transfer(from, to, amount);
             return;
@@ -263,9 +253,7 @@ contract TGSTUltimateV10 is
 
         (uint256 burnAmount, uint256 mintAmount) = _dynamicBurnMint(amount);
 
-        if (burnAmount > 0) {
-            super._burn(from, burnAmount);
-        }
+        if (burnAmount > 0) _burn(from, burnAmount);
 
         uint256 netAmount = amount - burnAmount;
         super._transfer(from, to, netAmount);
@@ -296,9 +284,6 @@ contract TGSTUltimateV10 is
         mintAmount = (amount * mintBP) / 10000;
     }
 
-    // -------------------------
-    // Price calculation
-    // -------------------------
     function currentPrice() public view returns (uint256) {
         uint256 supplyEffective = totalSupply() - stabilizerPool;
         if (supplyEffective == 0) return targetPrice;
@@ -307,7 +292,7 @@ contract TGSTUltimateV10 is
     }
 
     // -------------------------
-    // Oracle update with hardening
+    // Oracle update
     // -------------------------
     function updateOracle(
         uint256 totalVolume,
@@ -324,11 +309,8 @@ contract TGSTUltimateV10 is
         });
 
         bool anomalous = (totalVolume > 1e12 * 1e18 || totalPartnersMint > maxSupply / 2);
-        if (anomalous) {
-            consecutiveAnomalies += 1;
-        } else {
-            consecutiveAnomalies = 0;
-        }
+        if (anomalous) consecutiveAnomalies += 1;
+        else consecutiveAnomalies = 0;
 
         if (consecutiveAnomalies >= ANOMALY_THRESHOLD) {
             _pause();
@@ -345,8 +327,7 @@ contract TGSTUltimateV10 is
         external nonReentrant whenNotPaused
     {
         require(duration >= MIN_STAKE_DURATION && duration <= MAX_STAKE_DURATION, "TGST: invalid duration");
-        require(amount > 0, "TGST: zero amount");
-        require(balanceOf(msg.sender) >= amount, "TGST: insufficient balance");
+        require(amount > 0 && balanceOf(msg.sender) >= amount, "TGST: invalid amount");
 
         _transfer(msg.sender, address(this), amount);
 
@@ -409,29 +390,27 @@ contract TGSTUltimateV10 is
     }
 
     // -------------------------
-    // Rescue ERC20 (safe)
+    // Rescue ERC20
     // -------------------------
-    function rescueERC20(
-        address token,
-        uint256 amount,
-        address recipient
-    ) external onlyRole(GOVERNOR_ROLE) nonReentrant {
+    function rescueERC20(address token, uint256 amount, address recipient)
+        external onlyRole(GOVERNOR_ROLE) nonReentrant
+    {
         require(token != address(this), "TGST: cannot rescue native token");
         IERC20(token).safeTransfer(recipient, amount);
         emit EmergencyRescue(token, amount, recipient);
     }
 
     // -------------------------
-    // Central control renounce
+    // Renounce central control
     // -------------------------
     function renounceCentralControl() external {
-        require(msg.sender == owner, "TGST: only owner can renounce");
+        require(msg.sender == owner, "TGST: only owner");
         _revokeRole(DEFAULT_ADMIN_ROLE, owner);
         emit CentralControlRenounced(owner);
     }
 
     // -------------------------
-    // Pause / Unpause
+    // Pause / unpause
     // -------------------------
     function pause() external onlyRole(GOVERNOR_ROLE) {
         _pause();
@@ -442,14 +421,9 @@ contract TGSTUltimateV10 is
         consecutiveAnomalies = 0;
     }
 
-    // -------------------------
-    // Before token transfer override
-    // -------------------------
-    function _beforeTokenTransfer(
-        address from,
-        address to,
-        uint256 amount
-    ) internal virtual override whenNotPaused {
+    function _beforeTokenTransfer(address from, address to, uint256 amount)
+        internal override whenNotPaused
+    {
         super._beforeTokenTransfer(from, to, amount);
     }
 }
