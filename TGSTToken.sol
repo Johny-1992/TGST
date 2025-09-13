@@ -12,11 +12,19 @@ pragma solidity ^0.8.20;
   - Dynamic burn on transfers, stabilizer pool, staking, airdrop, anti-bot, pause, reentrancy guard
 */
 
+// ---- Importations ----
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/extensions/ERC20Pausable.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 
+// ---- Interface Oracle (déplacée en haut) ----
+interface IOracle { 
+    function totalVolume() external view returns (uint256); 
+    function totalStaked() external view returns (uint256); 
+}
+
+// ---- Contrat principal ----
 contract TGSTLaptopFinal is ERC20, ERC20Pausable, Ownable, ReentrancyGuard {
     // ---------- Constants ----------
     uint256 public constant MAX_SUPPLY = 1_000_000_000_000 * 1e18;
@@ -53,17 +61,13 @@ contract TGSTLaptopFinal is ERC20, ERC20Pausable, Ownable, ReentrancyGuard {
     mapping(address => uint256) public lastTxAt;
 
     // ---------- Consumption mint (EIP-712) ----------
-    address public partnerVerifier; // address that signs vouchers (can be partner or aggregator)
+    address public partnerVerifier; 
     bytes32 private constant _CONSUME_TYPEHASH = keccak256("Consume(address user,uint256 amountInUSDT,uint256 nonce,uint256 expiry,address partner)");
     mapping(address => uint256) public nonces;
 
     // ---------- Price settings ----------
-    // initial price: 1 TGST = 0.00001 USDT -> targetPrice = 1e13 (USDT scaled 1e18)
-    uint256 public targetPrice = 1e13;
-    uint256 public constant K = 1e13; // coefficient for price adjustment (oracle)
-
-    // Optional oracle (external) to provide totalVolume/totalStaked if desired
-    interface IOracle { function totalVolume() external view returns (uint256); function totalStaked() external view returns (uint256); }
+    uint256 public targetPrice = 1e13; // initial price reference
+    uint256 public constant K = 1e13;  // coefficient for oracle adjustment
     IOracle public oracle;
 
     // ---------- Events ----------
@@ -77,25 +81,25 @@ contract TGSTLaptopFinal is ERC20, ERC20Pausable, Ownable, ReentrancyGuard {
     event StabilizerPoolUpdated(address pool);
     event PartnerVerifierSet(address pv);
     event OracleSet(address oracleAddr);
+    event AntiBotParamsUpdated(uint32 cooldown, uint16 txBP, uint16 walletBP);
 
     // ---------- Constructor ----------
-    constructor(address initialOwner, address partnerVerifier_) ERC20("Token Global Smart Trade", "TGST") Ownable(initialOwner) {
+    constructor(address initialOwner, address partnerVerifier_) 
+        ERC20("Token Global Smart Trade", "TGST") 
+        Ownable(initialOwner) 
+    {
         require(initialOwner != address(0), "zero owner");
         require(MAX_SUPPLY > 0, "zero supply");
 
-        // tokenomics
-        initialDeployable = MAX_SUPPLY / 10; // 10%
-        botDistribution = (initialDeployable * 25) / 100; // 25% of initialDeployable
+        initialDeployable = MAX_SUPPLY / 10; 
+        botDistribution = (initialDeployable * 25) / 100; 
 
-        // mint ownerInitial and bot reserve to contract
         uint256 ownerInitial = initialDeployable - botDistribution;
         if (ownerInitial > 0) _mint(initialOwner, ownerInitial);
         if (botDistribution > 0) {
             _mint(address(this), botDistribution);
-            // keep botDistribution in contract for airdrops/stabilizer
         }
 
-        // set partner verifier
         partnerVerifier = partnerVerifier_;
         emit PartnerVerifierSet(partnerVerifier_);
     }
@@ -136,8 +140,7 @@ contract TGSTLaptopFinal is ERC20, ERC20Pausable, Ownable, ReentrancyGuard {
         emit Unstaked(msg.sender, s.amount, reward);
     }
 
-    // ---------- Consumption mint (partner-signed voucher) ----------
-    // amountInUSDT is the USDT-equivalent value (scale 1e18). No USDT transfer required.
+    // ---------- Consumption mint ----------
     function consumptionMint(
         uint256 amountInUSDT,
         uint256 nonce,
@@ -154,10 +157,9 @@ contract TGSTLaptopFinal is ERC20, ERC20Pausable, Ownable, ReentrancyGuard {
         address signer = _recover(digest, signature);
         require(signer == partnerVerifier || signer == partner, "invalid signer");
 
-        // compute mint quantity from price (USDT per TGST scaled 1e18)
         uint256 price = currentPrice();
         require(price > 0, "price zero");
-        uint256 mintAmount = (amountInUSDT * 1e18) / price; // mintAmount in TGST (18 decimals)
+        uint256 mintAmount = (amountInUSDT * 1e18) / price;
         require(totalSupply() + mintAmount <= MAX_SUPPLY, "max supply");
 
         nonces[msg.sender] += 1;
@@ -165,17 +167,18 @@ contract TGSTLaptopFinal is ERC20, ERC20Pausable, Ownable, ReentrancyGuard {
         emit ConsumptionMinted(msg.sender, amountInUSDT, mintAmount);
     }
 
-    // EIP-712 domain helpers (uses ERC20 name)
+    // ---------- EIP-712 helpers ----------
     function _hashTypedDataV4(bytes32 structHash) internal view returns (bytes32) {
-        // domain separator per EIP-712 v4 simplified
         return keccak256(abi.encodePacked("\x19\x01", _domainSeparatorV4(), structHash));
     }
     function _domainSeparatorV4() public view returns (bytes32) {
-        // Using simple domain: name + version "1"
-        return keccak256(abi.encode(keccak256("EIP712Domain(string name,string version)"), keccak256(bytes(name())), keccak256(bytes("1"))));
+        return keccak256(abi.encode(
+            keccak256("EIP712Domain(string name,string version)"), 
+            keccak256(bytes(name())), 
+            keccak256(bytes("1"))
+        ));
     }
     function _recover(bytes32 digest, bytes calldata sig) internal pure returns (address) {
-        // simple ecrecover splitter
         require(sig.length == 65, "bad sig");
         bytes32 r; bytes32 s; uint8 v;
         assembly {
@@ -187,9 +190,8 @@ contract TGSTLaptopFinal is ERC20, ERC20Pausable, Ownable, ReentrancyGuard {
         return ecrecover(digest, v, r, s);
     }
 
-    // ---------- Price (TGST per USDT scaled 1e18) ----------
+    // ---------- Price ----------
     function currentPrice() public view returns (uint256) {
-        // base targetPrice may be adjusted by oracle volume if available
         uint256 supplyEff = totalSupply();
         if (supplyEff == 0) return targetPrice;
         if (address(oracle) == address(0)) return targetPrice;
@@ -201,12 +203,9 @@ contract TGSTLaptopFinal is ERC20, ERC20Pausable, Ownable, ReentrancyGuard {
     function setOracle(address oracleAddr) external onlyOwner { oracle = IOracle(oracleAddr); emit OracleSet(oracleAddr); }
     function setPartnerVerifier(address pv) external onlyOwner { partnerVerifier = pv; emit PartnerVerifierSet(pv); }
 
-    // ---------- Core transfer hook: anti-bot + burn + stabilizer ----------
-    // Override _update (OZ v5 pattern) to apply pre-transfer logic
+    // ---------- Core transfer hook ----------
     function _update(address from, address to, uint256 value) internal override(ERC20, ERC20Pausable) {
-        // skip for mint/burn or owner-internal ops
         if (from != address(0) && to != address(0) && from != owner() && to != owner()) {
-            // anti-bot
             if (antiBotActive) {
                 uint256 last = lastTxAt[from];
                 if (last != 0) require(block.timestamp >= last + cooldown, "cooldown");
@@ -217,11 +216,10 @@ contract TGSTLaptopFinal is ERC20, ERC20Pausable, Ownable, ReentrancyGuard {
                 lastTxAt[from] = block.timestamp;
             }
 
-            // dynamic burn scaling with price (simple inverse relation)
             uint16 burnBP = baseBurnBP;
             uint256 price = currentPrice();
             if (price > 0) {
-                uint256 scaled = (uint256(baseBurnBP) * 1e18) / price; // higher price -> lower burn; lower price -> higher burn
+                uint256 scaled = (uint256(baseBurnBP) * 1e18) / price;
                 if (scaled > maxBurnBP) scaled = maxBurnBP;
                 if (scaled > type(uint16).max) scaled = type(uint16).max;
                 burnBP = uint16(scaled);
@@ -232,7 +230,7 @@ contract TGSTLaptopFinal is ERC20, ERC20Pausable, Ownable, ReentrancyGuard {
                 uint256 half = burnAmount / 2;
                 uint256 toBurn = burnAmount - half;
                 if (toBurn > 0) {
-                    super._update(from, address(0), toBurn); // burn
+                    super._update(from, address(0), toBurn);
                 }
                 if (half > 0) {
                     if (stabilizerPool != address(0)) {
